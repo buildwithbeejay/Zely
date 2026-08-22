@@ -430,15 +430,17 @@ const AdminDashboardScreen: React.FC = () => {
   const [selectedReconUser, setSelectedReconUser] = useState<any | null>(null);
   const accountReportQueryRef = useRef<HTMLInputElement | null>(null);
 
-  const userDetailStats = useMemo(() => {
+  const viewedUserStats = useMemo(() => {
     if (!viewedUser) {
       return { vaultsLinked: "—", totalWallets: "—" };
     }
-
-    const seed = Number.parseInt(viewedUser.id.replace(/\D/g, ""), 10) || 0;
+    const stableSeed = Array.from(viewedUser.id).reduce(
+      (sum, char) => sum + char.charCodeAt(0),
+      0,
+    );
     return {
-      vaultsLinked: (seed % 3) + 1,
-      totalWallets: (seed % 4) + 1,
+      vaultsLinked: ((stableSeed % 3) + 1).toString(),
+      totalWallets: ((stableSeed % 4) + 1).toString(),
     };
   }, [viewedUser?.id]);
 
@@ -516,28 +518,41 @@ const AdminDashboardScreen: React.FC = () => {
   };
 
   const sanitizeCsvField = (value: string | number | null | undefined) => {
-    const raw = String(value ?? "")
-      .replace(/\r?\n/g, " ")
-      .replace(/"/g, '""');
-    const escaped =
-      raw.startsWith("=") ||
-      raw.startsWith("+") ||
-      raw.startsWith("-") ||
-      raw.startsWith("@")
-        ? `'${raw}`
-        : raw;
-    return `"${escaped.replace(/,/g, ";")}"`;
+    const rawValue = String(value ?? "");
+    const normalized = rawValue.replace(/\r\n|\r|\n/g, " ").replace(/"/g, '""');
+    const safeValue = /^[=+\-@]/.test(normalized)
+      ? `'${normalized}`
+      : normalized;
+    return `"${safeValue}"`;
   };
 
   const handleDownloadStatement = (user: UserData) => {
     const userTxs = transactions.filter((t) => t.userId === user.id);
+    const headers = ["Date", "Type", "Flow", "Amount", "Status"];
 
     if (userTxs.length === 0) {
-      showToast("info", `No transactions found for ${user.name}`);
+      const csvContent = [headers.map(sanitizeCsvField).join(",")].join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const safeUserName =
+        user.name
+          .trim()
+          .replace(/[^a-zA-Z0-9_. -]+/g, "_")
+          .replace(/\s+/g, "_") || "user";
+      link.setAttribute("href", url);
+      link.setAttribute(
+        "download",
+        `statement_${safeUserName}_${Date.now()}.csv`,
+      );
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      showToast("info", "No transactions found for this user.");
       return;
     }
 
-    const headers = ["Date", "Type", "Flow", "Amount", "Status"];
     const rows = userTxs.map((t) => [
       new Date(t.date).toLocaleString(),
       t.type,
@@ -550,20 +565,19 @@ const AdminDashboardScreen: React.FC = () => {
       headers.map(sanitizeCsvField).join(","),
       ...rows.map((row) => row.map(sanitizeCsvField).join(",")),
     ].join("\n");
-
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     const safeUserName =
       user.name
-        .replace(/[^a-zA-Z0-9._-]+/g, "_")
-        .replace(/_+/g, "_")
-        .replace(/^_+|_+$/g, "") || "user";
+        .trim()
+        .replace(/[^a-zA-Z0-9_. -]+/g, "_")
+        .replace(/\s+/g, "_") || "user";
+    link.setAttribute("href", url);
     link.setAttribute(
       "download",
       `statement_${safeUserName}_${Date.now()}.csv`,
     );
-    link.setAttribute("href", url);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -1819,27 +1833,35 @@ const AdminDashboardScreen: React.FC = () => {
                 />
                 <button
                   onClick={() => {
-                    const query = (accountReportQueryRef.current?.value || "")
+                    const query = accountReportQueryRef.current?.value
                       .toLowerCase()
                       .trim();
-                    if (!query)
+
+                    if (!query) {
                       return showToast(
                         "error",
                         "Please enter a user ID or email",
                       );
+                    }
 
-                    const matchedUser = users.find(
+                    const usr = users.find(
                       (u) =>
                         u.email.toLowerCase() === query ||
                         u.id.toLowerCase() === query,
                     );
 
-                    if (!matchedUser) {
-                      showToast("error", `No user found for "${query}"`);
-                      return;
+                    if (!usr) {
+                      console.warn(
+                        "Account report lookup failed for query:",
+                        query,
+                      );
+                      return showToast(
+                        "error",
+                        "No matching user found for that email or ID",
+                      );
                     }
 
-                    handleDownloadStatement(matchedUser);
+                    handleDownloadStatement(usr);
                   }}
                   className="px-6 py-3 bg-slate-900 dark:bg-slate-700 text-white rounded-xl font-bold text-sm shadow-lg hover:bg-slate-800 dark:hover:bg-slate-600 transition-colors flex items-center justify-center gap-2"
                 >
@@ -2146,7 +2168,9 @@ const AdminDashboardScreen: React.FC = () => {
                     Vaults Linked
                   </p>
                   <p className="text-xl font-black text-slate-900 dark:text-white">
-                    {userDetailStats.vaultsLinked}
+                    {viewedUserStats.vaultsLinked === "—"
+                      ? "—"
+                      : viewedUserStats.vaultsLinked}
                   </p>
                 </div>
                 <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700/50 w-full overflow-hidden">
@@ -2154,7 +2178,9 @@ const AdminDashboardScreen: React.FC = () => {
                     Total Wallets
                   </p>
                   <p className="text-xl font-black text-slate-900 dark:text-white">
-                    {userDetailStats.totalWallets}
+                    {viewedUserStats.totalWallets === "—"
+                      ? "—"
+                      : viewedUserStats.totalWallets}
                   </p>
                 </div>
                 <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700/50 w-full overflow-hidden">

@@ -69,11 +69,11 @@ export interface KycSubmissionResponse {
 // (if population didn't run) or this populated shape (if it did).
 interface RawSubmissionDoc {
   _id: string;
-  userId?: {
+  userId: {
     _id: string;
     email?: string;
     name?: string;
-  } | null;
+  };
   userPublicId: string;
   targetTier: string;
   status: string;
@@ -94,35 +94,35 @@ interface RawSubmissionDoc {
 /**
  * Maps the raw backend document (Mongoose shape, flat fields, `_id`,
  * populated `userId`) into the frontend's KYCSubmission type (`id`,
- * `tier`, nested `data`).
+ * `tier`, nested `data`). Keep the mapped payload aligned with the
+ * selected tier so tier-3 reviews are not misclassified as tier-2.
  */
 function mapToKYCSubmission(doc: RawSubmissionDoc): KYCSubmission {
-  const tier2Data: Tier2Payload | null =
-    doc.governmentId && doc.address
-      ? {
-          bvn: doc.bvn ?? "",
-          nin: doc.nin ?? "",
-          dateOfBirth: doc.dateOfBirth ?? "",
-          governmentId: doc.governmentId as Tier2Payload["governmentId"],
-          address: doc.address,
-        }
-      : null;
+  const isTier3 = doc.targetTier === "TIER_3";
 
-  const tier3Data: Tier3Payload = {
-    selfieUrl: doc.selfieUrl ?? "",
-    livenessVideoUrl: doc.livenessVideoUrl ?? "",
-  };
+  const data: Tier2Payload | Tier3Payload = isTier3
+    ? {
+        selfieUrl: doc.selfieUrl ?? "",
+        livenessVideoUrl: doc.livenessVideoUrl ?? "",
+      }
+    : {
+        bvn: doc.bvn ?? "",
+        nin: doc.nin ?? "",
+        dateOfBirth: doc.dateOfBirth ?? "",
+        governmentId: doc.governmentId as Tier2Payload["governmentId"],
+        address: doc.address as Tier2Payload["address"],
+      };
 
   return {
     id: doc._id,
     userId: doc.userPublicId,
-    userEmail: doc?.userId?.email,
-    userName: doc?.userId?.name,
+    userEmail: doc?.userId.email,
+    userName: doc?.userId.name,
     tier: doc.targetTier as KYCTier,
     status: doc.status as KYCStatus,
     submittedAt: doc.submittedAt,
     rejectionReason: doc.rejectionReason,
-    data: doc.targetTier === "TIER_3" ? tier3Data : (tier2Data ?? tier3Data),
+    data,
   };
 }
 
