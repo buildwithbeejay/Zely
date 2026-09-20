@@ -1,6 +1,6 @@
 // src/events/publishconfirm.event.ts
 import { withKafkaBreaker } from "@/infrastructure/resilience/breakers/kafka.breaker";
-import { kafkaMessagesProcessedTotal } from "@/infrastructure/resilience/metrics";
+import { kafkaMessagesProducedTotal } from "@/infrastructure/resilience/metrics";
 import { producer } from "@/kafka/config";
 import { TOPICS } from "@/kafka/config/kafka.topics";
 import { RetryEnvelope } from "@/kafka/retry.helpers/retry.envelope";
@@ -33,9 +33,8 @@ export async function onEventConfirmed(
         });
       }, "publishConfirmedEvent");
 
-      kafkaMessagesProcessedTotal.inc({
+      kafkaMessagesProducedTotal.inc({
         topic: TOPICS.CONFIRMED_TRANSFER_EVENTS,
-        consumer_group: "event-producer",
       });
 
       logger.info("Event published to confirmed.events", {

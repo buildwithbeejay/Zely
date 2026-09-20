@@ -23,6 +23,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useToast } from "../../context/ToastContext";
 import { Account } from "../../utils/types";
+import { useNavigate } from "react-router-dom";
 
 const MAX_TRANSFER_LIMIT = 1000000;
 const SUGGESTED_AMOUNTS = [1000, 5000, 10000, 20000, 50000];
@@ -153,6 +154,7 @@ const TransfersScreen: React.FC = () => {
   const location = useLocation();
   const { showToast } = useToast();
   const { auth } = useAuth();
+  const navigate = useNavigate();
   const isFunding = location.pathname.includes("fund-wallet");
   // Tab State for Transfers (Internal vs P2P)
   const [transferType, setTransferType] = useState<"internal" | "p2p">(
@@ -174,10 +176,10 @@ const TransfersScreen: React.FC = () => {
   } | null>(null);
   const [p2pRecipient, setP2pRecipient] = useState("");
 
-  // Funding State
+  // Funding State (includes 'confirm' step)
   const [fundingMethod, setFundingMethod] = useState<"bank" | "card">("bank");
   const [fundStatus, setFundStatus] = useState<
-    "idle" | "processing" | "success"
+    "idle" | "confirm" | "processing" | "success"
   >("idle");
   const [fundingAmount, setFundingAmount] = useState("");
   // Transfer State
@@ -503,7 +505,8 @@ const TransfersScreen: React.FC = () => {
     }
   };
 
-  const handleFunding = async () => {
+  // 1. Opens the confirmation review
+  const handleFunding = () => {
     if (!fundingAmount || Number(fundingAmount) <= 0) {
       showToast("error", "Please enter a valid amount to fund");
       return;
@@ -514,13 +517,29 @@ const TransfersScreen: React.FC = () => {
       return;
     }
 
-    // Get main checking wallet
+    // Check that wallet exists
     const mainWallet = wallets?.find(
       (w: { walletType: string }) => w.walletType === "MAIN_CHECKINGS",
     );
 
     if (!mainWallet) {
       showToast("error", "No wallet found");
+      return;
+    }
+
+    // Go to confirmation step
+    setFundStatus("confirm");
+  };
+
+  // 2. Confirms and initializes Paystack payment
+  const confirmFunding = async () => {
+    const mainWallet = wallets?.find(
+      (w: { walletType: string }) => w.walletType === "MAIN_CHECKINGS",
+    );
+
+    if (!mainWallet) {
+      showToast("error", "No wallet found");
+      setFundStatus("idle");
       return;
     }
 
@@ -536,9 +555,6 @@ const TransfersScreen: React.FC = () => {
       });
 
       const { reference, authorizationUrl, alreadyExists } = response.data.data;
-
-      const key = `fund_${mainWallet.walletId}_${crypto.randomUUID()}`;
-      const publicKey = import.meta.env.VITE_PAYSTACK_PUBLIC_KEY;
 
       if (alreadyExists) {
         // Transaction already initialized with Paystack — open existing checkout
@@ -559,6 +575,17 @@ const TransfersScreen: React.FC = () => {
       );
       setFundingAmount("");
     } catch (error: any) {
+      // 409 = pending intent exists — extract reference and navigate
+      if (error.response?.status === 409) {
+        const msg: string = error.response?.data?.message ?? "";
+        const reference = msg.replace("PENDING_INITIALIZATION_EXISTS_", "");
+        if (reference) {
+          setFundStatus("idle");
+          navigate(`/payments/session/${reference}`);
+          return;
+        }
+      }
+
       const msg =
         error.response?.data?.message ||
         "Unable to initialize payment. Please try again.";
@@ -593,7 +620,6 @@ const TransfersScreen: React.FC = () => {
           {fundStatus === "success" ? (
             <div className="text-center py-10 animate-in zoom-in duration-300">
               <div className="w-20 h-20 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto text-green-500 mb-6">
-                MAX_TRMAX_TRANSFER_LIMITANSFER_LIMITMAX_TRANSFER_LIMIT
                 <CheckCircle2 className="w-10 h-10" />
               </div>
               <h3 className="text-2xl font-black mb-2">Funding Successful!</h3>
@@ -606,6 +632,105 @@ const TransfersScreen: React.FC = () => {
               >
                 Fund Again
               </button>
+            </div>
+          ) : fundStatus === "confirm" || fundStatus === "processing" ? (
+            /* ========================================================================= */
+            /* FUND WALLET CONFIRMATION SCREEN */
+            /* ========================================================================= */
+            <div className="flex-1 flex flex-col animate-in fade-in slide-in-from-right-4 duration-300">
+              <div className="flex-1 space-y-6">
+                <div className="p-5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-slate-200 dark:border-slate-700">
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 text-center">
+                    Confirm Funding Details
+                  </h3>
+
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-slate-500 font-medium">
+                        Destination Wallet
+                      </span>
+                      <div className="text-right">
+                        <p className="text-sm font-bold text-slate-900 dark:text-white">
+                          Main Checking
+                        </p>
+                        <p className="text-xs text-slate-400">Current / Zely</p>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-slate-500 font-medium">
+                        Funding Method
+                      </span>
+                      <p className="text-sm font-bold text-slate-900 dark:text-white capitalize">
+                        External Card (Paystack)
+                      </p>
+                    </div>
+
+                    <div className="w-full h-px bg-slate-200 dark:bg-slate-700"></div>
+
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-slate-500 font-medium">
+                        Top-up Amount
+                      </span>
+                      <span className="text-base font-bold text-slate-900 dark:text-white">
+                        ₦
+                        {Number(fundingAmount).toLocaleString("en-NG", {
+                          minimumFractionDigits: 2,
+                        })}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-slate-500 font-medium">
+                        Gateway Provider Fee
+                      </span>
+                      <span className="text-base font-bold text-emerald-600 dark:text-emerald-400">
+                        ₦0.00
+                      </span>
+                    </div>
+
+                    <div className="w-full h-px bg-slate-200 dark:bg-slate-700"></div>
+
+                    <div className="flex justify-between items-center pt-2">
+                      <span className="text-base font-bold text-slate-900 dark:text-white">
+                        Total Charge
+                      </span>
+                      <span className="text-2xl font-black text-slate-900 dark:text-white">
+                        ₦
+                        {Number(fundingAmount).toLocaleString("en-NG", {
+                          minimumFractionDigits: 2,
+                        })}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Edit & Proceed Action Buttons */}
+              <div className="flex gap-4 mt-8">
+                <button
+                  type="button"
+                  onClick={() => setFundStatus("idle")}
+                  disabled={fundStatus === "processing"}
+                  className="flex-1 py-4 border border-slate-200 dark:border-slate-700 rounded-xl font-bold hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmFunding}
+                  disabled={fundStatus === "processing"}
+                  className="flex-[2] py-4 bg-primary text-white rounded-xl font-bold hover:bg-primary-light transition-colors shadow-lg shadow-primary/25 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                >
+                  {fundStatus === "processing" ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-5 h-5" /> Proceed to Gateway
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -678,14 +803,9 @@ const TransfersScreen: React.FC = () => {
                   </div>
                   <button
                     onClick={handleFunding}
-                    disabled={fundStatus === "processing"}
-                    className="w-full py-4 bg-primary text-white font-bold rounded-xl hover:bg-primary-light transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                    className="w-full py-4 bg-primary text-white font-bold rounded-xl hover:bg-primary-light transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
                   >
-                    {fundStatus === "processing" ? (
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                    ) : (
-                      "Pay via Provider"
-                    )}
+                    Review Funding
                   </button>
                 </div>
               )}

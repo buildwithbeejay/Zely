@@ -78,9 +78,7 @@ class authService {
     session.startTransaction();
 
     const userId = generateUserId();
-
     const normalizedEmail = email.toLowerCase().trim();
-
     const EventId = generateEventId();
 
     try {

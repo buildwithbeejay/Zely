@@ -193,7 +193,7 @@ export const config = {
   email: env.RESEND_API_KEY
     ? {
         apiKey: env.RESEND_API_KEY,
-        from: env.EMAIL_FROM ?? "noreply@fintech.local",
+        from: env.EMAIL_FROM ?? "Zely <hello@elementelectricalengineering.com>",
         fromName: env.EMAIL_FROM_NAME ?? "Fintech",
         testRecipient: env.TEST_RECIPIENT ?? "",
       }

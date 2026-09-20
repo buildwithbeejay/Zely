@@ -1,10 +1,10 @@
-import { Kafka } from 'kafkajs';
+import { Kafka } from "kafkajs";
 
 export async function waitForTopicsReady(
   kafka: InstanceType<typeof Kafka>,
   topics: string[],
   timeoutMs = 60000,
-  pollInterval = 500
+  pollInterval = 500,
 ): Promise<void> {
   const admin = kafka.admin();
   await admin.connect();
@@ -13,25 +13,26 @@ export async function waitForTopicsReady(
 
   while (true) {
     const metadata = await admin.fetchTopicMetadata({ topics });
-    // console.log("This is the metadata" , metadata)
 
     // Check if all topics have at least one partition with a leader
     const allReady = metadata.topics.every((topic: any) =>
-      topic.partitions.every((p: any) => p.leader !== -1)
+      topic.partitions.every((p: any) => p.leader !== -1),
     );
 
     if (allReady) {
       // small buffer to ensure metadata is fully propagated
-      await new Promise(res => setTimeout(res, 500));
+      await new Promise((res) => setTimeout(res, 500));
       break;
     }
 
     if (Date.now() - start > timeoutMs) {
       await admin.disconnect();
-      throw new Error(`Kafka topics not ready after ${timeoutMs}ms: ${topics.join(', ')}`);
+      throw new Error(
+        `Kafka topics not ready after ${timeoutMs}ms: ${topics.join(", ")}`,
+      );
     }
 
-    await new Promise(res => setTimeout(res, pollInterval));
+    await new Promise((res) => setTimeout(res, pollInterval));
   }
 
   await admin.disconnect();

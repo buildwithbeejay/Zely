@@ -1,9 +1,12 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import { AlertCircle, CheckCircle, X } from "lucide-react";
+import React, { createContext, useContext, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, CheckCircle, AlertCircle } from "lucide-react";
 
 interface ToastContextType {
-  showToast: (type: "success" | "error" | "info", message: string) => void;
+  showToast: (
+    type: "success" | "error" | "info" | "warning",
+    message: string,
+  ) => void;
 }
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined);
@@ -12,7 +15,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [toast, setToast] = useState<{
-    type: "success" | "error" | "info";
+    type: "success" | "error" | "info" | "warning";
     message: string;
   } | null>(null);
 
@@ -23,7 +26,10 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [toast]);
 
-  const showToast = (type: "success" | "error" | "info", message: string) => {
+  const showToast = (
+    type: "success" | "error" | "info" | "warning",
+    message: string,
+  ) => {
     setToast({ type, message });
   };
 
@@ -36,11 +42,17 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({
             className={`fixed top-6 left-1/2 transform -translate-x-1/2 z-[2147483647] flex items-start gap-3 px-4 py-3 rounded-xl shadow-2xl transition-all duration-300 animate-in slide-in-from-top-4 fade-in w-[90vw] max-w-[450px] ${
               toast.type === "success"
                 ? "bg-white dark:bg-slate-800 border-l-4 border-green-500"
-                : "bg-white dark:bg-slate-800 border-l-4 border-red-500"
+                : toast.type === "warning"
+                  ? "bg-white dark:bg-slate-800 border-l-4 border-yellow-500"
+                  : toast.type === "info"
+                    ? "bg-white dark:bg-slate-800 border-l-4 border-yellow-500"
+                    : "bg-white dark:bg-slate-800 border-l-4 border-red-500"
             }`}
           >
             {toast.type === "success" ? (
               <CheckCircle className="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
+            ) : toast.type === "warning" ? (
+              <AlertCircle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
             ) : toast.type === "info" ? (
               <AlertCircle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
             ) : (

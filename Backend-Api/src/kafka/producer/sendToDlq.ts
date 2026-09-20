@@ -2,7 +2,10 @@ import { producer } from "../config";
 import { logger } from "@/shared/utils/logger";
 import { RetryEnvelope } from "../retry.helpers/retry.envelope";
 import { withKafkaBreaker } from "@/infrastructure/resilience/breakers/kafka.breaker";
-import { kafkaMessagesFailedTotal } from "@/infrastructure/resilience/metrics";
+import {
+  kafkaMessagesDlqTotal,
+  kafkaMessagesProducedTotal,
+} from "@/infrastructure/resilience/metrics";
 
 export async function sendToDLQ(
   baseTopic: string,
@@ -30,9 +33,13 @@ export async function sendToDLQ(
       });
     }, "sendToDLQ");
 
-    kafkaMessagesFailedTotal.inc({
+    kafkaMessagesProducedTotal.inc({
       topic: dlqTopic,
-      consumer_group: "dlq-producer",
+    });
+
+    kafkaMessagesDlqTotal.inc({
+      topic: baseTopic,
+      processor: envelope.meta.processor,
     });
 
     logger.error("Event sent to DLQ", {

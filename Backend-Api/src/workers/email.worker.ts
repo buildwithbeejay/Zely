@@ -7,6 +7,7 @@ import { EmailService } from "../infrastructure/helpers/email.service.helper";
 import { EMAIL_QUEUE } from "../infrastructure/queues/email.queue";
 import { conn } from "./bullMq.config";
 import { config } from "@/config/index";
+import { configureResendBreaker } from "@/infrastructure/resilience/breakers/resend.breaker";
 
 console.log("🔥 EMAIL WORKER FILE LOADED");
 
@@ -53,6 +54,8 @@ async function pushMetrics(): Promise<void> {
 //────────────────────────────────────────────────────────────────
 async function bootstrap(): Promise<void> {
   const connection = conn;
+
+  configureResendBreaker(workerRegistry);
 
   const emailQueueRef = new Queue(EMAIL_QUEUE, { connection });
 

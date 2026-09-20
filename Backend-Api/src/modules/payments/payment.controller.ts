@@ -1,19 +1,19 @@
 // src/modules/payments/payment.controller.ts
-import { Response, Router } from "express";
-import { StatusCodes } from "http-status-codes";
-import asyncWrapper from "@/shared/middleware/async.wrapper";
-import validateRequest from "@/shared/middleware/validation.middleware";
-import { requireAuth } from "@/shared/middleware/auth.middleware";
-import { getRequestContext } from "@/shared/middleware/request.context";
 import Controller from "@/config/interfaces/controller.interfaces";
 import { IAuthRequest } from "@/config/interfaces/request.interface";
+import { paymentReferenceLimiter } from "@/infrastructure/helpers/ratelimiter";
+import asyncWrapper from "@/shared/middleware/async.wrapper";
+import { requireAuth } from "@/shared/middleware/auth.middleware";
+import { getRequestContext } from "@/shared/middleware/request.context";
+import validateRequest from "@/shared/middleware/validation.middleware";
+import { Response, Router } from "express";
+import { StatusCodes } from "http-status-codes";
+import {
+  PaymentInitialization,
+  PaymentInitializationStatus,
+} from "./payment.initialization.model";
 import PaymentService from "./payment.service";
 import paymentValidation from "./payment.validation";
-import { PaymentInitializationStatus } from "./payment.initialization.model";
-import {
-  paymentInitLimiters,
-  paymentReferenceLimiter,
-} from "@/infrastructure/helpers/ratelimiter";
 
 class PaymentController implements Controller {
   public path = "/payments";
@@ -33,6 +33,13 @@ class PaymentController implements Controller {
       //...paymentInitLimiters, // ← add after auth, before validation
       validateRequest(paymentValidation.initialize, "body"),
       this.initializePayment,
+    );
+
+    // PATCH /payments/:reference/cancel
+    this.route.patch(
+      `${this.path}/:reference/cancel`,
+      requireAuth,
+      this.cancelPayment,
     );
 
     this.route.get(
@@ -78,7 +85,8 @@ class PaymentController implements Controller {
 
   private getPaymentByReference = asyncWrapper(
     async (req: IAuthRequest, res: Response) => {
-      const userPublicId = req.user?.userPublicId;
+      // const userPublicId = req.user?.userPublicId;
+      const userPublicId = req.user?.userId;
       const payment = await this.paymentService.getInitializationByReference(
         req.params.reference,
       );
@@ -133,6 +141,30 @@ class PaymentController implements Controller {
       );
 
       return res.status(StatusCodes.OK).json({ ok: true, data: payments });
+    },
+  );
+
+  private cancelPayment = asyncWrapper(
+    async (req: IAuthRequest, res: Response) => {
+      const userPublicId = req.user?.userId;
+      const payment = await this.paymentService.getInitializationByReference(
+        req.params.reference,
+      );
+
+      if (payment.initiatedByUserPublicId !== userPublicId) {
+        return res.status(403).json({ error: "FORBIDDEN" });
+      }
+
+      if (payment.status !== "PENDING") {
+        return res.status(400).json({ error: "ONLY_PENDING_CAN_BE_CANCELLED" });
+      }
+
+      await PaymentInitialization.updateOne(
+        { reference: req.params.reference },
+        { $set: { status: "CANCELLED" } },
+      );
+
+      return res.status(200).json({ ok: true });
     },
   );
 }

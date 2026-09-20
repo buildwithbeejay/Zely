@@ -9,7 +9,7 @@ import {
   HashRouter as Router,
   Routes,
 } from "react-router-dom";
-import { AuthProvider } from "./auth/AuthProvider";
+import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import RequireAuth from "./auth/RequireAuth";
 import { ToastProvider } from "./context/ToastContext";
 import DashboardLayout from "./layouts/DashboardLayout";
@@ -32,6 +32,10 @@ import TransactionsScreen from "./pages/dashboard/TransactionsScreen";
 import TransfersScreen from "./pages/dashboard/TransfersScreen";
 import WalletsScreen from "./pages/dashboard/WalletsScreen";
 import ProvisioningScreen from "./pages/onboarding/ProvisioningScreen";
+import LandingPage from "@/pages/landing/LandingPage";
+import SystemArchitecture from "@/pages/common/SystemArchitecture";
+import PaymentSessionScreen from "@/pages/dashboard/paymentSessinScreen";
+import { SocketProvider } from "@/context/SocketContext";
 //import UtilityBillsScreen from './pages/dashboard/UtilityBillsScreen';
 
 const queryClient = new QueryClient({
@@ -46,6 +50,18 @@ const queryClient = new QueryClient({
   },
 });
 
+const RootRedirect: React.FC = () => {
+  const { auth, isLoading } = useAuth();
+
+  if (isLoading) return null;
+
+  if (auth?.accessToken) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return <LandingPage />;
+};
+
 const App: React.FC = () => {
   return (
     <QueryClientProvider client={queryClient}>
@@ -55,8 +71,20 @@ const App: React.FC = () => {
           <div className="min-h-screen w-full bg-white dark:bg-black text-gray-900 dark:text-gray-100 relative">
             <Router>
               <Routes>
-                {/* Public Routes — untouched */}
-                <Route path="/" element={<Navigate to="/login" replace />} />
+                {/* Public Landing, Architecture & Auth Routes */}
+                <Route path="/" element={<RootRedirect />} />
+                <Route
+                  path="/architecture"
+                  element={
+                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                      <SystemArchitecture />
+                    </div>
+                  }
+                />
+                <Route
+                  path="/system-architecture"
+                  element={<Navigate to="/architecture" replace />}
+                />
                 <Route path="/login" element={<LoginScreen />} />
                 <Route path="/register" element={<RegisterScreen />} />
                 <Route
@@ -82,13 +110,13 @@ const App: React.FC = () => {
                 <Route element={<RequireAuth disallowedRoles={["ADMIN"]} />}>
                   <Route
                     element={
-                      <NotificationProvider>
-                        {" "}
-                        {/* ← only mounts when RequireAuth passes */}
-                        <DashboardDataProvider>
-                          <DashboardLayout />
-                        </DashboardDataProvider>
-                      </NotificationProvider>
+                      <SocketProvider>
+                        <NotificationProvider>
+                          <DashboardDataProvider>
+                            <DashboardLayout />
+                          </DashboardDataProvider>
+                        </NotificationProvider>
+                      </SocketProvider>
                     }
                   >
                     <Route path="/dashboard" element={<DashboardScreen />} />
@@ -99,6 +127,10 @@ const App: React.FC = () => {
                     />
                     <Route path="/fund-wallet" element={<TransfersScreen />} />
                     <Route path="/transfers" element={<TransfersScreen />} />
+                    <Route
+                      path="/payments/session/:intentId"
+                      element={<PaymentSessionScreen />}
+                    />
                     <Route
                       path="/transactions"
                       element={<TransactionsScreen />}

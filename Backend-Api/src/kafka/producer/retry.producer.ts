@@ -4,7 +4,7 @@ import { logger } from "@/shared/utils/logger";
 import { RetryEnvelope } from "../retry.helpers/retry.envelope";
 import { resolveRetryPolicy } from "../retry.helpers/retry.policy";
 import { withKafkaBreaker } from "@/infrastructure/resilience/breakers/kafka.breaker";
-import { kafkaMessagesProcessedTotal } from "@/infrastructure/resilience/metrics";
+import { kafkaMessagesProducedTotal } from "@/infrastructure/resilience/metrics";
 import { sendToDLQ } from "@/kafka/producer/sendToDlq";
 
 export async function sendToRetry(baseTopic: string, envelope: RetryEnvelope) {
@@ -58,9 +58,8 @@ export async function sendToRetry(baseTopic: string, envelope: RetryEnvelope) {
     });
   }, "sendToRetry");
 
-  kafkaMessagesProcessedTotal.inc({
+  kafkaMessagesProducedTotal.inc({
     topic: retryLevel.topic,
-    consumer_group: "retry-producer",
   });
 
   logger.warn("Event sent to retry topic");

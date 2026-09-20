@@ -128,7 +128,7 @@ export class EmailService {
     return withResendBreaker(async () => {
       const { data, error } = await resend.emails.send(
         {
-          from: `${platformName} <onboarding@resend.dev>`,
+          from: `${platformName} <hello@elementelectricalengineering.com>`,
           to: recipient,
           subject:
             config.app.env === "development"

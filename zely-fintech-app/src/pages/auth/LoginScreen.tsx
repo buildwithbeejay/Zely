@@ -73,7 +73,7 @@ const LoginScreen: React.FC = () => {
 
         // ─── REPLACED BLOCK STARTS HERE ───────────────────────────────
         const from = (location.state as any)?.from?.pathname;
-        const safePaths = ["/unauthorized", "/login", "/", undefined];
+        const safePaths = ["/unauthorized", "/login", undefined];
 
         let redirectTo: string;
         if (user.role === "ADMIN") {

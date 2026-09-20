@@ -1,8 +1,9 @@
-import { createContext, useContext, ReactNode } from "react";
+import { createContext, useContext, ReactNode, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { transactionService } from "../services/transactionService";
 import { queryKeys } from "@/utils/queryKey";
 import { ApiWallet, ApiTransaction } from "../utils/types";
+import { useSocket } from "@/context/SocketContext";
 
 interface DashboardDataContextType {
   wallets: ApiWallet[] | undefined;
@@ -25,14 +26,29 @@ export const DashboardDataProvider = ({
 }) => {
   const queryClient = useQueryClient();
 
-  // ─── Wallets query ─────────────────────────────────────────────────────
+  const socket = useSocket();
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleBalanceUpdate = () => {
+      refreshWallets();
+      refreshTransactions();
+    };
+
+    socket.on("balance:updated", handleBalanceUpdate);
+
+    return () => {
+      socket.off("balance:updated", handleBalanceUpdate);
+    };
+  }, [socket]);
+
   const { data: wallets, isLoading: loadingWallets } = useQuery({
     queryKey: queryKeys.wallets,
     queryFn: () => transactionService.getWallets(),
     staleTime: 30 * 1000,
   });
 
-  // ─── Transactions query ────────────────────────────────────────────────
   const {
     data: transactionsResponse,
     isLoading: loadingTransactions,
@@ -43,7 +59,6 @@ export const DashboardDataProvider = ({
     staleTime: 30 * 1000,
   });
 
-  // ─── Deduplicate transactions ──────────────────────────────────────────
   const rawTransactions = transactionsResponse?.transactions ?? [];
   const seen = new Set();
   const transactions = rawTransactions.filter((tx: ApiTransaction) => {
@@ -52,7 +67,6 @@ export const DashboardDataProvider = ({
     return true;
   });
 
-  // ─── Refresh helpers — invalidate React Query cache ───────────────────
   const refreshWallets = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.wallets });
   };

@@ -1,4 +1,4 @@
-import { TransactionStatus } from "@/types";
+import { axiosPrivate } from "@/api/client";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowDownLeft,
@@ -42,10 +42,46 @@ const TransactionsScreen: React.FC = () => {
     refetchOnWindowFocus: true,
   });
 
-  const allTransactions = transactionData?.transactions ?? [];
+  const { data: paymentInitData } = useQuery({
+    queryKey: ["paymentInits"],
+    queryFn: async () => {
+      const r = await axiosPrivate.get("/payments");
+      console.log("payment inits:", r.data);
+      return r.data.data;
+    },
+    staleTime: 30 * 1000,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+  });
+
   const hasMore =
     (transactionData?.pagination?.page ?? 1) <
     (transactionData?.pagination?.totalPages ?? 1);
+
+  // const allTransactions = transactionData?.transactions ?? [];
+
+  const mappedInits: ApiTransaction[] = (paymentInitData ?? [])
+    .filter((p: any) => p.status === "PENDING" || p.status === "CANCELLED")
+    .map((p: any) => ({
+      id: p.reference,
+      transactionId: p.reference,
+      category: "EXTERNAL_FUNDING",
+      direction: "credit" as const,
+      amount: p.amount,
+      currency: p.currency,
+      status: p.status,
+      occurredAt: p.initiatedAt,
+      counterpartyName: "Paystack",
+      counterpartyWalletType: null,
+      walletType: p.targetWalletType,
+      fee: 0,
+      penaltyReason: null,
+    }));
+
+  const allTransactions = [
+    ...(transactionData?.transactions ?? []),
+    ...mappedInits,
+  ];
 
   // Filter Logic
   const filteredTransactions = allTransactions.filter((tx: ApiTransaction) => {
@@ -94,8 +130,8 @@ const TransactionsScreen: React.FC = () => {
     title:
       tx.category === "INTERNAL_TRANSFER"
         ? tx.direction === "debit"
-          ? `Moved to ${tx.counterpartyWalletType === "SAVINGS" ? "Savings" : "Main Checking"}`
-          : `Moved from ${tx.counterpartyWalletType === "SAVINGS" ? "Savings" : "Main Checking"}`
+          ? `Moved to ${tx.counterpartyWalletType === "MAIN_CHECKINGS" ? "Main Checking" : "Savings"}`
+          : `Moved from ${tx.counterpartyWalletType === "MAIN_CHECKINGS" ? "Main Checking" : "Savings"}`
         : tx.direction === "debit"
           ? `Sent to ${tx.counterpartyName ?? "Unknown"}`
           : `Received from ${tx.counterpartyName ?? "Unknown"}`,
@@ -105,10 +141,11 @@ const TransactionsScreen: React.FC = () => {
     status:
       tx.status === "TRANSACTION_COMPLETED"
         ? "success"
-        : tx.status === "TRANSACTION_COMPLETED" ||
-            tx.status === "TRANSACTION_COMPLETED"
+        : tx.status === "CANCELLED"
           ? "failed"
-          : ("pending" as TransactionStatus),
+          : tx.status === "PENDING"
+            ? "pending"
+            : "failed",
     type:
       tx.direction === "debit" ? "outgoing" : ("incoming" as TransactionType),
     notes: `${tx.walletType} • ${tx.currency}`,
@@ -259,9 +296,13 @@ const TransactionsScreen: React.FC = () => {
                         <div className="flex items-center gap-3">
                           <div
                             className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
-                              tx.direction === "credit"
-                                ? "bg-green-100 text-green-600 dark:bg-green-900/20 dark:text-green-400"
-                                : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                              tx.status === "PENDING"
+                                ? "bg-yellow-100 text-yellow-600 dark:bg-yellow-900/20 dark:text-yellow-400"
+                                : tx.status === "CANCELLED"
+                                  ? "bg-red-100 text-red-500 dark:bg-red-900/20 dark:text-red-400"
+                                  : tx.direction === "credit"
+                                    ? "bg-green-100 text-green-600 dark:bg-green-900/20 dark:text-green-400"
+                                    : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
                             }`}
                           >
                             {tx.direction === "credit" ? (
@@ -277,13 +318,14 @@ const TransactionsScreen: React.FC = () => {
                                   ? `Moved to ${
                                       tx.counterpartyWalletType ===
                                       "MAIN_CHECKINGS"
-                                        ? "Savings"
-                                        : "Main Checking"
+                                        ? "Main Checking"
+                                        : "Savings"
                                     }`
                                   : `Moved from ${
-                                      tx.counterpartyWalletType === "SAVINGS"
-                                        ? "Savings"
-                                        : "Main Checking"
+                                      tx.counterpartyWalletType ===
+                                      "MAIN_CHECKINGS"
+                                        ? "Main Checking"
+                                        : "Savings"
                                     }`
                                 : tx.category === "VAULT_WITHDRAWAL"
                                   ? "Vault Withdrawal"
@@ -291,7 +333,7 @@ const TransactionsScreen: React.FC = () => {
                                     ? "Vault Deposit"
                                     : tx.direction === "debit"
                                       ? `Payment Sent to ${tx.counterpartyName ?? "Unknown"}`
-                                      : `Payment Received from ${tx.counterpartyWalletType ?? "Unknown"}`}
+                                      : `Payment Received from ${tx.counterpartyName ?? "Unknown"}`}
                             </h4>
                             <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 font-medium">
                               {tx.category}
@@ -300,7 +342,15 @@ const TransactionsScreen: React.FC = () => {
                         </div>
                         <div className="text-right">
                           <p
-                            className={`font-bold text-xs sm:text-sm ${tx.direction === "credit" ? "text-green-600 dark:text-green-400" : "text-slate-900 dark:text-white"}`}
+                            className={`font-bold text-xs sm:text-sm ${
+                              tx.status === "PENDING"
+                                ? "text-yellow-600 dark:text-yellow-400"
+                                : tx.status === "CANCELLED"
+                                  ? "text-red-500 dark:text-red-400"
+                                  : tx.direction === "credit"
+                                    ? "text-green-600 dark:text-green-400"
+                                    : "text-slate-900 dark:text-white"
+                            }`}
                           >
                             {tx.direction === "credit" ? "+" : "-"}₦
                             {Math.abs(tx.amount).toLocaleString("en-NG", {

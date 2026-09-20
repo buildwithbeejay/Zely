@@ -1,4 +1,5 @@
 import { processAuthEvent } from "@/events/authProcessor.evt";
+import { processFundingEvents } from "@/events/fundingProcessor.evt";
 import {
   completeIdempotency,
   failIdempotency,
@@ -8,14 +9,17 @@ import { kycEvent } from "@/events/kyc.events";
 import { withMongoTransaction } from "@/events/mongo.wrapper";
 import { processPaymentEvents } from "@/events/payment.events";
 import { processTransferEvents } from "@/events/transferProcessor.evt";
+import { processVaultEvents } from "@/events/vaultProcessor.evt";
 import {
   kafkaMessagesFailedTotal,
   kafkaMessagesProcessedTotal,
+  kafkaMessagesRetriedTotal,
   kafkaProcessingDuration,
 } from "@/infrastructure/resilience/metrics";
 import { onAuthSuccess } from "@/kafka/consumer/auth.consumer";
 import { onEventConfirmed } from "@/kafka/producer/event.producer";
 import { handleTransactionCompleted } from "@/kafka/projections/transfer.projection";
+import { RetryEnvelopeSchema } from "@/kafka/schema/retry.schema";
 import { logger } from "@/shared/utils/logger";
 import { ClientSession } from "mongoose";
 import { kafka } from "../config/kafka.config";
@@ -37,9 +41,6 @@ import {
   VAULT_RETRY_LEVELS,
 } from "../retry.helpers/retry.policy";
 import { validateWithSchema } from "../schema/zod.helper";
-import { processFundingEvents } from "@/events/fundingProcessor.evt";
-import { RetryEnvelopeSchema } from "@/kafka/schema/retry.schema";
-import { processVaultEvents } from "@/events/vaultProcessor.evt";
 
 // retry.ready.ts
 let markReady: () => void;
@@ -160,220 +161,229 @@ export async function runRetryConsumer() {
         consumer_group: RETRY_CONSUMER_GROUP,
       });
 
-      const raw = JSON.parse(message.value.toString());
-
-      const envelope: RetryEnvelope = validateWithSchema(
-        RetryEnvelopeSchema,
-        raw,
-      );
-
-      const {
-        retryCount,
-        originalTopic,
-        originalConsumerGroup,
-        processor: processorType,
-      } = envelope.meta;
-
-      if (!originalConsumerGroup) {
-        logger.warn("Missing originalConsumerGroup in retry envelope", {
-          eventId: envelope.event.eventId,
-        });
-      }
-
-      /** -------------------------
-       * RESOLVE PROCESSOR
-       * ------------------------- */
-      const config = PROCESSOR_REGISTRY[processorType];
-
-      if (!config) {
-        logger.error("Unknown processor type, sending to DLQ", {
-          processorType,
-          eventId: envelope.event.eventId,
-        });
-        await sendToDLQ(
-          originalTopic,
-          envelope,
-          new Error(`Unknown processor: ${processorType}`),
-        );
-        await retryConsumer.commitOffsets([
-          {
-            topic,
-            partition,
-            offset: (parseInt(message.offset) + 1).toString(),
-          },
-        ]);
-        return;
-      }
-
-      const { processor, retryLevels, maxRetries } = config;
-      const nextRetryCount = retryCount + 1;
-
-      /** -------------------------
-       * CHECK RETRY EXHAUSTION
-       * ------------------------- */
-      if (nextRetryCount >= maxRetries) {
-        await sendToDLQ(
-          originalTopic,
-          envelope,
-          new Error("Max retries reached"),
-        );
-        logger.error("Retry exhausted, sent to DLQ", {
-          eventId: envelope.event.eventId,
-          retryCount,
-          processorType,
-        });
-        await retryConsumer.commitOffsets([
-          {
-            topic,
-            partition,
-            offset: (parseInt(message.offset) + 1).toString(),
-          },
-        ]);
-        return;
-      }
-
-      /** -------------------------
-       * APPLY COOL-DOWN DELAY
-       * ------------------------- */
-      const retryConfig = retryLevels[nextRetryCount] ?? null;
-      if (!retryConfig) {
-        await sendToDLQ(
-          originalTopic,
-          envelope,
-          new Error("No retry level found"),
-        );
-        logger.error("No retry level found, sent to DLQ", {
-          eventId: envelope.event.eventId,
-          retryCount,
-          nextRetryCount,
-        });
-        await retryConsumer.commitOffsets([
-          {
-            topic,
-            partition,
-            offset: (parseInt(message.offset) + 1).toString(),
-          },
-        ]);
-        return;
-      }
-
-      const createdAtMs = new Date(envelope.meta.createdAt).getTime();
-      const elapsed = Date.now() - createdAtMs;
-      const delay = Math.max(retryConfig.delayMs - elapsed, 0);
-
-      if (delay > 0) {
-        logger.info("Retry cool-down applied", {
-          delay,
-          eventId: envelope.event.eventId,
-          willProcessAt: new Date(Date.now() + delay).toISOString(), // ← add this
-        });
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-
-      /** -------------------------
-       * PROCESS WITH TRANSACTION
-       * ------------------------- */
-      const IdmChks = await initIdempotency(
-        envelope.event.eventId,
-        topic,
-        RETRY_CONSUMER_GROUP,
-        nextRetryCount,
-      );
-
-      if (IdmChks.decision === "SKIP") {
-        kafkaMessagesProcessedTotal.inc({
-          topic,
-          consumer_group: RETRY_CONSUMER_GROUP,
-        });
-        timer();
-
-        await retryConsumer.commitOffsets([
-          {
-            topic,
-            partition,
-            offset: (parseInt(message.offset) + 1).toString(),
-          },
-        ]);
-        return;
-      }
-
       try {
-        const result = await withMongoTransaction(async (session) => {
-          const result = await processor(originalTopic, envelope, session);
-          logger.info("Processor completed", {
+        const raw = JSON.parse(message.value.toString());
+
+        const envelope: RetryEnvelope = validateWithSchema(
+          RetryEnvelopeSchema,
+          raw,
+        );
+
+        const {
+          retryCount,
+          originalTopic,
+          originalConsumerGroup,
+          processor: processorType,
+        } = envelope.meta;
+
+        if (!originalConsumerGroup) {
+          logger.warn("Missing originalConsumerGroup in retry envelope", {
             eventId: envelope.event.eventId,
-          }); // ← does this log?
-
-          await completeIdempotency(
-            envelope.event.eventId,
-            RETRY_CONSUMER_GROUP,
-            IdmChks.version,
-            session,
-            topic,
-            nextRetryCount,
-          );
-
-          return result;
-        });
-
-        await config.onSuccess?.(result, envelope);
-
-        kafkaMessagesProcessedTotal.inc({
-          topic,
-          consumer_group: RETRY_CONSUMER_GROUP,
-        });
-        timer();
-
-        await retryConsumer.commitOffsets([
-          {
-            topic,
-            partition,
-            offset: (parseInt(message.offset) + 1).toString(),
-          },
-        ]);
-
-        logger.info("Retry processed successfully");
-      } catch (error: any) {
-        logger.error("Retry processing failed");
-
-        kafkaMessagesFailedTotal.inc({
-          topic,
-          consumer_group: RETRY_CONSUMER_GROUP,
-        });
-        timer();
-
-        if (nextRetryCount >= maxRetries) {
-          await sendToDLQ(originalTopic, envelope, error);
-          logger.error("Max retries reached, sent to DLQ", {
-            eventId: envelope.event.eventId,
-          });
-        } else {
-          await failIdempotency(
-            envelope.event.eventId,
-            RETRY_CONSUMER_GROUP,
-            topic,
-            nextRetryCount,
-            IdmChks.version,
-          );
-
-          await sendToRetry(originalTopic, {
-            ...envelope,
-            meta: {
-              ...envelope.meta,
-              retryCount: nextRetryCount,
-              lastError: error.message,
-              createdAt: new Date().toISOString(),
-            },
           });
         }
 
-        await retryConsumer.commitOffsets([
-          {
+        /** -------------------------
+         * RESOLVE PROCESSOR
+         * ------------------------- */
+        const config = PROCESSOR_REGISTRY[processorType];
+
+        if (!config) {
+          logger.error("Unknown processor type, sending to DLQ", {
+            processorType,
+            eventId: envelope.event.eventId,
+          });
+          await sendToDLQ(
+            originalTopic,
+            envelope,
+            new Error(`Unknown processor: ${processorType}`),
+          );
+          await retryConsumer.commitOffsets([
+            {
+              topic,
+              partition,
+              offset: (parseInt(message.offset) + 1).toString(),
+            },
+          ]);
+          return;
+        }
+
+        const { processor, retryLevels, maxRetries } = config;
+        const nextRetryCount = retryCount + 1;
+
+        /** -------------------------
+         * CHECK RETRY EXHAUSTION
+         * ------------------------- */
+        if (nextRetryCount >= maxRetries) {
+          await sendToDLQ(
+            originalTopic,
+            envelope,
+            new Error("Max retries reached"),
+          );
+          logger.error("Retry exhausted, sent to DLQ", {
+            eventId: envelope.event.eventId,
+            retryCount,
+            processorType,
+          });
+          await retryConsumer.commitOffsets([
+            {
+              topic,
+              partition,
+              offset: (parseInt(message.offset) + 1).toString(),
+            },
+          ]);
+          return;
+        }
+
+        /** -------------------------
+         * APPLY COOL-DOWN DELAY
+         * ------------------------- */
+        const retryConfig = retryLevels[nextRetryCount] ?? null;
+        if (!retryConfig) {
+          await sendToDLQ(
+            originalTopic,
+            envelope,
+            new Error("No retry level found"),
+          );
+          logger.error("No retry level found, sent to DLQ", {
+            eventId: envelope.event.eventId,
+            retryCount,
+            nextRetryCount,
+          });
+          await retryConsumer.commitOffsets([
+            {
+              topic,
+              partition,
+              offset: (parseInt(message.offset) + 1).toString(),
+            },
+          ]);
+          return;
+        }
+
+        const createdAtMs = new Date(envelope.meta.createdAt).getTime();
+        const elapsed = Date.now() - createdAtMs;
+        const delay = Math.max(retryConfig.delayMs - elapsed, 0);
+
+        if (delay > 0) {
+          logger.info("Retry cool-down applied", {
+            delay,
+            eventId: envelope.event.eventId,
+            willProcessAt: new Date(Date.now() + delay).toISOString(), // ← add this
+          });
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+
+        /** -------------------------
+         * PROCESS WITH TRANSACTION
+         * ------------------------- */
+        const IdmChks = await initIdempotency(
+          envelope.event.eventId,
+          topic,
+          RETRY_CONSUMER_GROUP,
+          nextRetryCount,
+        );
+
+        if (IdmChks.decision === "SKIP") {
+          kafkaMessagesProcessedTotal.inc({
             topic,
-            partition,
-            offset: (parseInt(message.offset) + 1).toString(),
-          },
-        ]);
+            consumer_group: RETRY_CONSUMER_GROUP,
+          });
+          timer();
+
+          await retryConsumer.commitOffsets([
+            {
+              topic,
+              partition,
+              offset: (parseInt(message.offset) + 1).toString(),
+            },
+          ]);
+          return;
+        }
+
+        try {
+          const result = await withMongoTransaction(async (session) => {
+            const result = await processor(originalTopic, envelope, session);
+            logger.info("Processor completed", {
+              eventId: envelope.event.eventId,
+            }); // ← does this log?
+
+            await completeIdempotency(
+              envelope.event.eventId,
+              RETRY_CONSUMER_GROUP,
+              IdmChks.version,
+              session,
+              topic,
+              nextRetryCount,
+            );
+
+            return result;
+          });
+
+          await config.onSuccess?.(result, envelope);
+
+          kafkaMessagesProcessedTotal.inc({
+            topic,
+            consumer_group: RETRY_CONSUMER_GROUP,
+          });
+          timer();
+
+          await retryConsumer.commitOffsets([
+            {
+              topic,
+              partition,
+              offset: (parseInt(message.offset) + 1).toString(),
+            },
+          ]);
+
+          logger.info("Retry processed successfully");
+        } catch (error: any) {
+          logger.error("Retry processing failed");
+
+          kafkaMessagesFailedTotal.inc({
+            topic,
+            consumer_group: RETRY_CONSUMER_GROUP,
+          });
+          timer();
+
+          if (nextRetryCount >= maxRetries) {
+            await sendToDLQ(originalTopic, envelope, error);
+            logger.error("Max retries reached, sent to DLQ", {
+              eventId: envelope.event.eventId,
+            });
+          } else {
+            await failIdempotency(
+              envelope.event.eventId,
+              RETRY_CONSUMER_GROUP,
+              topic,
+              nextRetryCount,
+              IdmChks.version,
+            );
+
+            await sendToRetry(originalTopic, {
+              ...envelope,
+              meta: {
+                ...envelope.meta,
+                retryCount: nextRetryCount,
+                lastError: error.message,
+                createdAt: new Date().toISOString(),
+              },
+            });
+
+            kafkaMessagesRetriedTotal.inc({
+              topic: originalTopic,
+              processor: processorType,
+            });
+          }
+
+          await retryConsumer.commitOffsets([
+            {
+              topic,
+              partition,
+              offset: (parseInt(message.offset) + 1).toString(),
+            },
+          ]);
+        }
+      } finally {
+        timer();
       }
     },
   });

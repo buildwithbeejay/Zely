@@ -7,6 +7,7 @@ import {
   ReactNode,
 } from "react";
 import { transactionService } from "../services/transactionService";
+import { useSocket } from "@/context/SocketContext";
 
 interface NotificationItem {
   id: string;
@@ -43,6 +44,31 @@ export const NotificationProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
+  const socket = useSocket();
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleNewNotification = (data: any) => {
+      addNotification({
+        id: data.id,
+        type: data.type,
+        title: data.title,
+        message: data.message,
+        amount: data.amount,
+        currency: data.currency,
+        read: false,
+        occurredAt: data.occurredAt,
+        time: "Just now",
+      });
+    };
+
+    socket.on("notification:new", handleNewNotification);
+
+    return () => {
+      socket.off("notification:new", handleNewNotification);
+    };
+  }, [socket]);
 
   const formatTime = (occurredAt: string) => {
     const date = new Date(occurredAt);
