@@ -1,21 +1,20 @@
-import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import {
-  ShieldCheck,
-  ShieldAlert,
-  Clock,
-  ChevronRight,
-  Info,
   AlertCircle,
   CheckCircle2,
-  TrendingUp,
-  ArrowUpCircle,
+  ChevronRight,
+  Clock,
+  Info,
   Loader2,
+  ShieldCheck,
+  TrendingUp,
 } from "lucide-react";
+import React, { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAsync } from "../../hooks/useAsync";
 import { kycService } from "../../services/kycService";
 import { KYCStatusResponse } from "../../types";
-import StateRenderer from "../../components/common/StateRenderer";
-import { useAsync } from "../../hooks/useAsync";
+import { useSocket } from "@/context/SocketContext";
+import { useToast } from "@/context/ToastContext";
 
 const TierLimitsTable = () => {
   const limits = [
@@ -89,6 +88,9 @@ const TierLimitsTable = () => {
 
 const KYCStatusScreen: React.FC = () => {
   const navigate = useNavigate();
+  const socket = useSocket();
+  const { showToast } = useToast();
+
   const {
     data: status,
     loading,
@@ -99,6 +101,26 @@ const KYCStatusScreen: React.FC = () => {
   useEffect(() => {
     fetchStatus().catch(() => {});
   }, [fetchStatus]);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleNotification = (data: any) => {
+      if (data.type === "KYC_APPROVED" || data.type === "KYC_REJECTED") {
+        fetchStatus();
+        showToast(
+          data.type === "KYC_APPROVED" ? "success" : "error",
+          data.message,
+        );
+      }
+    };
+
+    socket.on("notification:new", handleNotification);
+
+    return () => {
+      socket.off("notification:new", handleNotification);
+    };
+  }, [socket]);
 
   const getTierBadge = (tier: string) => {
     switch (tier) {

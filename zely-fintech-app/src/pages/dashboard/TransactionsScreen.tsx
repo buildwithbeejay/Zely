@@ -46,7 +46,6 @@ const TransactionsScreen: React.FC = () => {
     queryKey: ["paymentInits"],
     queryFn: async () => {
       const r = await axiosPrivate.get("/payments");
-      console.log("payment inits:", r.data);
       return r.data.data;
     },
     staleTime: 30 * 1000,

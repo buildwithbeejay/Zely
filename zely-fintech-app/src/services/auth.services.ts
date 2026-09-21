@@ -118,4 +118,36 @@ export const authService = {
     const response = await axiosPrivate.post("/users/retry-provisioning");
     return response.data;
   },
+
+  getProfile: async (): Promise<{
+    ok: boolean;
+    data: {
+      name: string;
+      email: string;
+      phone?: string;
+      address?: string;
+      createdAt: string;
+    };
+  }> => {
+    const response = await axiosPrivate.get("/users/profile");
+    return response.data;
+  },
+
+  updateProfile: async (data: {
+    name?: string;
+    phone?: string;
+    address?: string;
+  }): Promise<{
+    ok: boolean;
+    data: {
+      name: string;
+      email: string;
+      phone?: string;
+      address?: string;
+      createdAt: string;
+    };
+  }> => {
+    const response = await axiosPrivate.patch("/users/profile", data);
+    return response.data;
+  },
 };
