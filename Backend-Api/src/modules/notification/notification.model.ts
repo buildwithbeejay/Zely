@@ -6,6 +6,8 @@ export enum NotificationType {
   SECURITY = "security",
   INFO = "info",
   WARNING = "warning",
+  KYC_APPROVED = "KYC_APPROVED",
+  KYC_REJECTED = "KYC_REJECTED",
 }
 
 export interface INotification extends Document {

@@ -1,5 +1,4 @@
 import { Queue } from "bullmq";
-import { config } from "@/config/index";
 import { conn } from "@/workers/bullMq.config";
 
 export const EMAIL_QUEUE = "email-queue";

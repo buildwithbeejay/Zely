@@ -251,19 +251,37 @@ async function bootstrap(): Promise<void> {
         const outboxId = job.data._id;
 
         try {
-          const normalizedOutboxId =
-            mongoose.Types.ObjectId.createFromHexString(outboxId);
-
-          const result = await EmailOutboxModel.updateOne(
-            { _id: normalizedOutboxId },
-            { $set: { status: "DELIVERED", deliveredAt: new Date() } },
-          );
-
-          if (result.matchedCount === 0) {
-            logger.error("Outbox document not found for delivered job", {
+          if (!outboxId) {
+            logger.warn("No outboxId on job data — skipping DELIVERED mark", {
               jobId: job.id,
-              outboxId,
+              jobName: job.name,
             });
+          } else {
+            try {
+              const normalizedOutboxId =
+                mongoose.Types.ObjectId.createFromHexString(outboxId);
+
+              const result = await EmailOutboxModel.updateOne(
+                { _id: normalizedOutboxId },
+                { $set: { status: "DELIVERED", deliveredAt: new Date() } },
+              );
+
+              if (result.matchedCount === 0) {
+                logger.error("Outbox document not found for delivered job", {
+                  jobId: job.id,
+                  outboxId,
+                });
+              }
+            } catch (outboxErr: any) {
+              logger.error(
+                "Failed to mark outbox DELIVERED — email was already sent",
+                {
+                  jobId: job.id,
+                  outboxId,
+                  error: outboxErr.message,
+                },
+              );
+            }
           }
         } catch (outboxErr: any) {
           // ⚠️ Email sent — do NOT rethrow. Retrying would duplicate the send.

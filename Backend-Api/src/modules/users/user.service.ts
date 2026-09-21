@@ -20,6 +20,47 @@ import { logger } from "@/shared/utils/logger";
 class userService {
   private userModel = User;
 
+  public updateUserProfile = async (
+    userSub: string,
+    update: Record<string, string>,
+  ) => {
+    const user = await this.userModel.findById(userSub).lean();
+
+    if (!user) {
+      throw new NotFoundError("USER_NOT_FOUND");
+    }
+
+    if (Object.keys(update).length === 0) {
+      throw new BadRequestError("NO_VALID_FIELDS_TO_UPDATE");
+    }
+
+    const result = await this.userModel
+      .findByIdAndUpdate(userSub, { $set: update }, { new: true })
+      .select("name email phone address")
+      .lean();
+
+    return {
+      ok: true,
+      data: result,
+    };
+  };
+
+  public getUserProfile = async (userSub: string) => {
+    const user = await this.userModel
+      .findById(userSub)
+      .select("name email phone address createdAt")
+      .lean();
+
+    if (!user) {
+      throw new NotFoundError("USER_NOT_FOUND");
+    }
+
+    return {
+      ok: true,
+      data: user,
+    };
+  };
+
   public getProvisioningStatus = async (
     userSub: string,
     context: IRequestContext,

@@ -16,6 +16,16 @@ const userSchema = new Schema<User, UserModel, IUserMethods>(
       type: String,
       required: true,
     },
+    phone: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    address: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     password: {
       type: String,
       validate: {
