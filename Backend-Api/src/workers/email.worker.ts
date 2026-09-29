@@ -244,6 +244,39 @@ async function bootstrap(): Promise<void> {
               idempotencyKey: job.id,
             });
             break;
+          case "PIN_LOCKED":
+            logger.info("PIN locked notification — email template pending", {
+              email,
+              name,
+            });
+            break;
+
+          case "PIN_CHANGE_OTP":
+            logger.info("PIN change OTP — email template pending", {
+              email,
+              name,
+            });
+            break;
+
+          case "PIN_RESET_REQUEST":
+            if (!otp) throw new Error("OTP is required for PIN reset email");
+            await EmailService.sendPasswordResetEmail(
+              email,
+              name,
+              otp,
+              expiresAt,
+              { idempotencyKey: job.id },
+            );
+            break;
+
+          case "PIN_SETUP":
+          case "PIN_CHANGE":
+          case "PIN_RESET_SUCCESS":
+            logger.info("PIN notification — email template pending", {
+              email,
+              name,
+            });
+            break;
 
           default:
             throw new Error(`Unknown email type: ${type}`);

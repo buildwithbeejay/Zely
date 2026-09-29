@@ -73,6 +73,7 @@ import {
   ReconciliationReport,
   ReconciliationStatus,
 } from "@/modules/reconciliation/reconciliation.model";
+import { runPinConsumer } from "@/kafka/consumer/pinconsumer";
 
 class App {
   public express: Application;
@@ -159,6 +160,7 @@ class App {
       await runPasswordConsumer();
       await runTransferConsumer();
       await runProjectionConsumer();
+      await runPinConsumer();
       await runVaultConsumer();
       await runPaymentConsumer();
       await runKycConsumer();

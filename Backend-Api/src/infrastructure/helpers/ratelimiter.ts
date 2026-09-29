@@ -42,7 +42,7 @@ export const loginLimiters = [
     keyGenerator: getKeyByIPAndEmail,
     keyPrefix: "rl:login:ipemail",
     failMode: "closed",
-    message: "Too many login attempts. Please try again in 15 minutes.",
+    message: "Too many login attempts.",
   }),
   createRateLimitMiddleware(redis, {
     windowMs: FIFTEEN_MIN,
@@ -206,6 +206,131 @@ export const resetPasswordLimiters = [
     maxRequests: 10,
     keyGenerator: getKeyByIP,
     keyPrefix: "rl:reset-password:ip",
+    failMode: "closed",
+    message: "Too many requests from this device. Please try again later.",
+  }),
+];
+
+export const changePasswordLimiters = [
+  // Per IP + email: 5 attempts per 15 minutes
+  createRateLimitMiddleware(redis, {
+    windowMs: FIFTEEN_MIN,
+    maxRequests: 5,
+    keyGenerator: getKeyByIPAndEmail,
+    keyPrefix: "rl:change-password:ipemail",
+    failMode: "closed",
+    message: "Too many password change attempts. Please try again later.",
+  }),
+  // Per email: 10 attempts per hour
+  createRateLimitMiddleware(redis, {
+    windowMs: ONE_HOUR,
+    maxRequests: 10,
+    keyGenerator: getKeyByEmail,
+    keyPrefix: "rl:change-password:email",
+    failMode: "closed",
+    message: "Too many password change attempts. Please try again later.",
+  }),
+  // Per IP: 20 attempts per 15 minutes
+  createRateLimitMiddleware(redis, {
+    windowMs: FIFTEEN_MIN,
+    maxRequests: 20,
+    keyGenerator: getKeyByIP,
+    keyPrefix: "rl:change-password:ip",
+    failMode: "closed",
+    message: "Too many requests from this device. Please try again later.",
+  }),
+];
+
+export const pinSetupLimiters = [
+  createRateLimitMiddleware(redis, {
+    windowMs: FIFTEEN_MIN,
+    maxRequests: 5,
+    keyGenerator: getKeyByIPAndEmail,
+    keyPrefix: "rl:pin-setup:ipemail",
+    failMode: "closed",
+    message: "Too many PIN setup attempts. Please try again later.",
+  }),
+  createRateLimitMiddleware(redis, {
+    windowMs: ONE_HOUR,
+    maxRequests: 10,
+    keyGenerator: getKeyByIP,
+    keyPrefix: "rl:pin-setup:ip",
+    failMode: "closed",
+    message: "Too many requests from this device. Please try again later.",
+  }),
+];
+
+export const pinChangeLimiters = [
+  createRateLimitMiddleware(redis, {
+    windowMs: FIFTEEN_MIN,
+    maxRequests: 5,
+    keyGenerator: getKeyByIPAndEmail,
+    keyPrefix: "rl:pin-change:ipemail",
+    failMode: "closed",
+    message: "Too many PIN change attempts. Please try again later.",
+  }),
+  createRateLimitMiddleware(redis, {
+    windowMs: ONE_HOUR,
+    maxRequests: 10,
+    keyGenerator: getKeyByIP,
+    keyPrefix: "rl:pin-change:ip",
+    failMode: "closed",
+    message: "Too many requests from this device. Please try again later.",
+  }),
+];
+
+export const pinForgotLimiters = [
+  createRateLimitMiddleware(redis, {
+    windowMs: ONE_HOUR,
+    maxRequests: 3,
+    keyGenerator: getKeyByIPAndEmail,
+    keyPrefix: "rl:pin-forgot:ipemail",
+    failMode: "closed",
+    message: "Too many PIN reset requests. Please try again later.",
+  }),
+  createRateLimitMiddleware(redis, {
+    windowMs: ONE_HOUR,
+    maxRequests: 5,
+    keyGenerator: getKeyByIP,
+    keyPrefix: "rl:pin-forgot:ip",
+    failMode: "closed",
+    message: "Too many requests from this device. Please try again later.",
+  }),
+];
+
+export const pinResetLimiters = [
+  createRateLimitMiddleware(redis, {
+    windowMs: FIFTEEN_MIN,
+    maxRequests: 5,
+    keyGenerator: getKeyByIPAndEmail,
+    keyPrefix: "rl:pin-reset:ipemail",
+    failMode: "closed",
+    message: "Too many PIN reset attempts. Please try again later.",
+  }),
+  createRateLimitMiddleware(redis, {
+    windowMs: ONE_HOUR,
+    maxRequests: 10,
+    keyGenerator: getKeyByIP,
+    keyPrefix: "rl:pin-reset:ip",
+    failMode: "closed",
+    message: "Too many requests from this device. Please try again later.",
+  }),
+];
+
+export const pinRequestChangeOtpLimiters = [
+  createRateLimitMiddleware(redis, {
+    windowMs: ONE_HOUR,
+    maxRequests: 3,
+    keyGenerator: getKeyByIPAndEmail,
+    keyPrefix: "rl:pin-change-otp:ipemail",
+    failMode: "closed",
+    message: "Too many OTP requests. Please try again later.",
+  }),
+  createRateLimitMiddleware(redis, {
+    windowMs: ONE_HOUR,
+    maxRequests: 5,
+    keyGenerator: getKeyByIP,
+    keyPrefix: "rl:pin-change-otp:ip",
     failMode: "closed",
     message: "Too many requests from this device. Please try again later.",
   }),

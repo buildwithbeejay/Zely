@@ -507,8 +507,8 @@ class authService {
       redis
         .getClient()
         .set(
-          `user:pwdver:${user._id}`,
-          user.passwordVersion,
+          `${config.redis.pwdverPrefix}${user._id}`,
+          String(user.passwordVersion ?? 0),
           "EX",
           60 * 60 * 24 * 7,
         ),
@@ -960,6 +960,151 @@ class authService {
       message:
         "Password reset successful. Please login with your new password.",
     };
+  }
+
+  public async changePassword(
+    userSub: string,
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string,
+    currentDeviceId: string,
+    context: IRequestContext,
+  ) {
+    if (newPassword !== confirmPassword) {
+      throw new BadRequestError("Passwords do not match");
+    }
+
+    if (currentPassword === newPassword) {
+      throw new BadRequestError(
+        "New password must be different from current password",
+      );
+    }
+
+    const user = await this.userModel
+      .findById(userSub)
+      .select("+password +passwordHistory +security")
+      .exec();
+
+    if (!user) throw new NotFoundError("User not found");
+
+    // Check account lock
+    if (user.security.lockedUntil && user.security.lockedUntil > new Date()) {
+      const minutesLeft = Math.ceil(
+        (user.security.lockedUntil.getTime() - Date.now()) / 60000,
+      );
+      throw new BadRequestError(
+        `Account locked. Try again in ${minutesLeft} minute${minutesLeft === 1 ? "" : "s"}.`,
+      );
+    }
+
+    // Verify current password
+    const isValid = await verifyPassword(currentPassword, user.password);
+    if (!isValid) {
+      const failedAttempts = (user.security.failedLoginAttempts || 0) + 1;
+      const lockDurationMs = getLockTime(failedAttempts);
+      const lockedUntil = lockDurationMs
+        ? new Date(Date.now() + lockDurationMs)
+        : null;
+
+      await this.userModel.updateOne(
+        { _id: user._id },
+        {
+          $inc: { "security.failedLoginAttempts": 1 },
+          $set: {
+            "security.lockedUntil": lockedUntil,
+            "security.lastFailedAt": new Date(),
+          },
+        },
+      );
+
+      AuditLogger.logUserAction(
+        context,
+        AuditAction.PASSWORD_CHANGE_FAILED,
+        AuditStatus.FAILED,
+        user.userId,
+      );
+
+      throw new BadRequestError("Current password is incorrect");
+    }
+
+    // Reset failed attempts
+    await this.userModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          "security.failedLoginAttempts": 0,
+          "security.lockedUntil": null,
+        },
+      },
+    );
+
+    // Check password history
+    const isReused = await isPasswordInHistory(user, newPassword);
+    if (isReused) {
+      throw new BadRequestError(
+        "Password has been used recently. Choose a different password.",
+      );
+    }
+
+    const hashedPwd = await hashedPassword(newPassword);
+
+    const mongoSession = await mongoose.startSession();
+    await mongoSession.withTransaction(async () => {
+      await this.userModel.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            password: hashedPwd,
+            passwordChangedAt: new Date(),
+          },
+          $inc: { passwordVersion: 1 },
+          $push: {
+            passwordHistory: { $each: [hashedPwd], $slice: -5 },
+          },
+        },
+        { session: mongoSession },
+      );
+
+      await emitOutboxEvent(
+        {
+          topic: "password.events",
+          eventId: generateEventId(),
+          eventType: AuditAction.PASSWORD_RESET_SUCCESS,
+          action: AuditAction.PASSWORD_RESET_SUCCESS,
+          status: AuditStatus.PENDING,
+          payload: { email: user.email, name: user.name },
+          aggregateType: "PASSWORD_CHANGE",
+          aggregateId: user.userId,
+          version: 1,
+          context,
+        },
+        { session: mongoSession },
+      );
+    });
+
+    mongoSession.endSession();
+
+    // Revoke all other sessions — keep current device
+    await revokeAllSessionsFull(userSub, currentDeviceId);
+
+    // Notify user
+    await this.notification.createAndEmit({
+      userId: user.userId,
+      type: NotificationType.SECURITY,
+      title: "Password Changed",
+      message:
+        "Your password was changed successfully. Other sessions have been signed out. If this wasn't you, contact support immediately.",
+      referenceId: generateEventId(),
+    });
+
+    AuditLogger.logUserAction(
+      context,
+      AuditAction.USER_PASSWORD_RESET,
+      AuditStatus.SUCCESS,
+      user.userId,
+    );
+
+    return { ok: true, message: "Password changed successfully" };
   }
 
   public async logout(cookie: string, context: IRequestContext) {

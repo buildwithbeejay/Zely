@@ -60,4 +60,12 @@ export const TOPICS = {
 
   WALLET_EVENTS: "wallet.events",
   WALLET_EVENTS_DLQ: "wallet.events.dlq",
+
+  // ======================
+  // PIN DOMAIN
+  // ======================
+  PIN_EVENTS: "pin.events",
+  PIN_EVENTS_DLQ: "pin.events.dlq",
+
+  REVERSAL_EVENTS: "reversal.events",
 };

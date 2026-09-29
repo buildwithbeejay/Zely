@@ -2,7 +2,10 @@ import Controller from "@/config/interfaces/controller.interfaces";
 import { IAuthRequest } from "@/config/interfaces/request.interface";
 import BadRequestError from "@/shared/errors/badRequest";
 import asyncWrapper from "@/shared/middleware/async.wrapper";
-import { requireAuth } from "@/shared/middleware/auth.middleware";
+import {
+  requireAuth,
+  requireFreshSession,
+} from "@/shared/middleware/auth.middleware";
 import { requireConsumerReady } from "@/shared/middleware/consumer.ready";
 import {
   getIdempotencyKey,
@@ -12,6 +15,7 @@ import { generateIdempotencyKey } from "@/shared/utils/id.generator";
 import { Response, Router } from "express";
 import { calculateFeeBreakdown } from "../fee/transfer.fee.engine";
 import TransferService from "./transfer.service";
+import { requirePin } from "@/modules/pin/pin.middleware";
 
 class TransferController implements Controller {
   public path = "/transfer";
@@ -27,12 +31,15 @@ class TransferController implements Controller {
       `${this.path}/p2p`,
       requireConsumerReady,
       requireAuth,
+      requireFreshSession,
+      requirePin,
       this.p2pTransfer,
     );
     this.route.post(
       `${this.path}/internal`,
       requireConsumerReady,
       requireAuth,
+      requireFreshSession,
       this.internalTransfer,
     );
     this.route.post(

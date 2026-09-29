@@ -48,7 +48,7 @@ class userService {
   public getUserProfile = async (userSub: string) => {
     const user = await this.userModel
       .findById(userSub)
-      .select("name email phone address createdAt")
+      .select("name email phone address createdAt passwordChangedAt")
       .lean();
 
     if (!user) {
@@ -219,8 +219,6 @@ class userService {
     const summary = await UserBalanceSummaryModel.findOne({
       userId: userPublicId,
     }).lean();
-
-    console.log(summary);
 
     if (summary) {
       const result = {
@@ -446,6 +444,7 @@ class userService {
     return {
       transactions: transactions.map((t) => ({
         transactionId: t.transactionRef ?? t.eventId, // ← use eventId as transactionId
+        rowKey: `${t.eventId}_${t.walletType}`,
         direction: t.direction,
         amount: t.amount,
         currency: t.currency,

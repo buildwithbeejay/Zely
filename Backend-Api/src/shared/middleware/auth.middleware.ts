@@ -5,14 +5,13 @@ import {
   isJtiBlacklisted,
 } from "@/infrastructure/helpers/session.helper";
 import { verifyAccessToken } from "@/infrastructure/helpers/token.helper";
-import { UserRole } from "@/modules/auth/authinterface";
 import { SessionModel } from "@/modules/sessions/session.model";
 import UnauthenticatedError from "@/shared/errors/unaunthenticated";
 import { logger } from "@/shared/utils/logger";
 import { NextFunction, Request, Response } from "express";
-import { StatusCodes } from "http-status-codes";
 import User from "modules/auth/authmodel";
 import { extractRequestContext } from "./request.context";
+import { UserRole } from "@/modules/auth/authinterface";
 
 export interface AccessPayload {
   userId: string;
@@ -25,6 +24,8 @@ export interface AccessPayload {
   jti: string;
   passwordVersion: number;
 }
+
+const ADMIN_ROLES: string[] = [UserRole.ADMIN];
 
 export const requireAuth = async (
   req: Request & { user?: any },
@@ -63,8 +64,8 @@ export const requireAuth = async (
     // ─── 3. Session + password version — parallel Redis, fail open ───────
     // Both checks run simultaneously. If Redis is down, we fall through
     // to MongoDB. Session miss ≠ security breach, MongoDB covers it.
+    // ─── 3. Session + password version — parallel Redis, fail open ───────
     let sessionValidated = false;
-    let redisAvailable = true;
 
     try {
       const [latestHash, storedPwdVer] = await Promise.all([
@@ -73,40 +74,54 @@ export const requireAuth = async (
       ]);
 
       if (latestHash) {
-        if (
-          storedPwdVer !== null &&
-          Number(storedPwdVer) !== expectedPasswordVersion
-        ) {
-          return next(
-            new UnauthenticatedError("Password changed — please login again"),
-          );
+        // ─── Password version check ──────────────────────────────────────
+        // If Redis has no version (null), force MongoDB fallback — don't skip
+        if (storedPwdVer === null) {
+          // Can't verify password version from cache — fall through to MongoDB
+          sessionValidated = false;
+        } else {
+          if (Number(storedPwdVer) !== expectedPasswordVersion) {
+            return next(
+              new UnauthenticatedError("Password changed — please login again"),
+            );
+          }
+
+          // ─── Periodic MongoDB confirm gate ───────────────────────────────
+          // Redis says session is valid — confirm against MongoDB every 2 min
+          // instead of on every single request
+          const confirmKey = `${config.redis.SESSION_CONFIRM_PREFIX}${payload.sub}:${payload.deviceId}`;
+          const recentlyConfirmed = await redis.getClient().get(confirmKey);
+
+          if (recentlyConfirmed) {
+            // Confirmed recently — trust Redis, skip MongoDB this request
+            sessionValidated = true;
+          } else {
+            // Gate expired — go confirm with MongoDB
+            const stillActive = await SessionModel.exists({
+              userId: payload.sub,
+              deviceId: payload.deviceId,
+              isActive: true,
+            });
+
+            if (!stillActive) {
+              return next(
+                new UnauthenticatedError("Session expired or logged out"),
+              );
+            }
+
+            // Refresh the confirm gate — don't hit MongoDB again for 2 minutes
+            await redis.getClient().set(confirmKey, "1", "EX", 120);
+
+            sessionValidated = true;
+          }
         }
-
-        // ─── Throttled verification against MongoDB ──────────────────────
-        // Redis says valid, but Redis is a cache — confirm against source
-        // of truth periodically rather than trusting indefinitely.
-        const stillActive = await SessionModel.exists({
-          userId: payload.sub,
-          deviceId: payload.deviceId,
-          isActive: true,
-        });
-
-        sessionValidated = !!stillActive;
       }
     } catch (redisErr) {
-      redisAvailable = false;
       logger.warn(
         "Redis unavailable in auth middleware — falling back to MongoDB",
       );
+      // sessionValidated stays false — step 4 will handle it
     }
-
-    // ADD THIS LINE
-    logger.info("SESSION CHECK STATE", {
-      sessionValidated,
-      redisAvailable,
-      sub: payload.sub,
-      deviceId: payload.deviceId,
-    });
 
     // ─── 4. MongoDB fallback if Redis missed or is down ──────────────────
     // Keeps users authenticated during Redis outages.
@@ -224,10 +239,50 @@ export const isAdmin = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const role = req.user?.role;
+  const userSub = req.user?.sub;
+  if (!userSub)
+    return res.status(401).json({ ok: false, message: "UNAUTHORIZED" });
 
-  if (role !== UserRole.ADMIN) {
-    return res.status(StatusCodes.FORBIDDEN).json({ error: "ADMIN_ONLY" });
+  // Fresh DB read, so a demoted admin loses access immediately
+  // instead of keeping it until their token expires
+  const user = await User.findById(userSub).select("role").lean();
+
+  if (!user || !ADMIN_ROLES.includes(user.role)) {
+    return res.status(403).json({ ok: false, message: "FORBIDDEN" });
   }
+
   next();
+};
+
+// src/shared/middleware/fresh.session.middleware.ts
+
+export const requireFreshSession = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const user = req.user;
+
+    if (!user) {
+      return next(new UnauthenticatedError("Unauthorized"));
+    }
+
+    const { sub, deviceId } = user;
+
+    const session = await SessionModel.findOne({
+      userId: sub,
+      deviceId,
+      isActive: true,
+      expiresAt: { $gt: new Date() },
+    }).lean();
+
+    if (!session) {
+      return next(new UnauthenticatedError("Session expired or logged out"));
+    }
+
+    next();
+  } catch (err) {
+    next(err);
+  }
 };

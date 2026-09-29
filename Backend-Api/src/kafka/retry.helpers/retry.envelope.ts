@@ -5,7 +5,8 @@ export type ProcessorType =
   | "kyc"
   | "payment"
   | "funding"
-  | "vault";
+  | "vault"
+  | "pin";
 
 export interface RetryEnvelopeMeta {
   retryCount: number;

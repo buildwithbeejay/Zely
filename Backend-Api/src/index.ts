@@ -14,6 +14,10 @@ import WebhookController from "./modules/payments/webhook.controller";
 import ReconciliationController from "./modules/reconciliation/reconciliation.controller";
 import vaultController from "./modules/vault/vault.controller";
 import WalletAdminController from "./modules/wallet/wallet.contoller";
+import PinController from "@/modules/pin/pin.controller";
+import ReversalController from "@/modules/reversal /reversal.controller";
+import AdminUserController from "@/modules/admin/admin.controller";
+import AdminAuditController from "@/modules/admin/admin.audit.controller";
 
 let isReady = false;
 
@@ -32,6 +36,10 @@ const app = new App(
     new UserController(),
     new NotificationController(),
     new SessionController(),
+    new PinController(),
+    new ReversalController(),
+    new AdminUserController(),
+    new AdminAuditController(),
   ],
   Number(config.app.port),
 );

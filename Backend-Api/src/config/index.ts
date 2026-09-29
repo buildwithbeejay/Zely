@@ -44,6 +44,7 @@ const envSchema = z.object({
   PWDVER_PREFIX: z.string().min(1),
   LASTUSED_PREFIX: z.string().min(1),
   SESSION_LATEST_PREFIX: z.string().min(1),
+  SESSION_CONFIRM_PREFIX: z.string().min(1),
 
   // Kafka (events)
   KAFKA_BROKERS: z.string().min(1),
@@ -129,6 +130,7 @@ export const config = {
     pwdverPrefix: env.PWDVER_PREFIX,
     lastusedPrefix: env.LASTUSED_PREFIX,
     sessionLatestPrefix: env.SESSION_LATEST_PREFIX,
+    SESSION_CONFIRM_PREFIX: env.SESSION_CONFIRM_PREFIX,
   },
 
   kafka: {

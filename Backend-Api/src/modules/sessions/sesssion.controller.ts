@@ -40,6 +40,29 @@ export class SessionController {
       isAdmin,
       this.adminKillAllSessions,
     );
+
+    this.route.get(
+      `/admin/users/:userPublicId/sessions`,
+      requireAuth,
+      isAdmin,
+      this.adminListSessions,
+    );
+
+    // Admin — kill one specific session for a user
+    this.route.delete(
+      `/admin/users/:userPublicId/sessions/:sessionId`,
+      requireAuth,
+      isAdmin,
+      this.adminKillSession,
+    );
+
+    // Admin — kill ALL sessions for a user
+    this.route.delete(
+      `/admin/users/:userPublicId/sessions`,
+      requireAuth,
+      isAdmin,
+      this.adminKillAllSessions,
+    );
   }
 
   // ─── List active sessions ──────────────────────────────────────────────
@@ -147,17 +170,6 @@ export class SessionController {
         });
       }
 
-      // Blacklist all access tokens immediately
-      // const now = new Date();
-      // for (const session of sessions) {
-      //   if (session.accessTokenJti && session.accessTokenExpiresAt > now) {
-      //     await blacklistJti(
-      //       session.accessTokenJti,
-      //       session.accessTokenExpiresAt,
-      //     );
-      //   }
-      // }
-
       // Get userId from first session
       const userId = sessions[0].userId;
 
@@ -186,6 +198,71 @@ export class SessionController {
         ok: true,
         message: `${sessions.length} session(s) terminated`,
       });
+    },
+  );
+
+  private adminListSessions = asyncWrapper(
+    async (req: Request, res: Response) => {
+      const { userPublicId } = req.params;
+
+      const sessions = await SessionModel.find({ userPublicId, isActive: true })
+        .sort({ lastUsedAt: -1 })
+        .lean();
+
+      return res.status(StatusCodes.OK).json({
+        ok: true,
+        data: sessions.map((s) => ({
+          sessionId: s.sessionId,
+          deviceName: s.deviceName,
+          ipAddress: s.ipAddress,
+          createdAt: s.createdAt,
+          lastUsedAt: s.lastUsedAt,
+          expiresAt: s.expiresAt,
+        })),
+      });
+    },
+  );
+
+  private adminKillSession = asyncWrapper(
+    async (req: Request, res: Response) => {
+      const { userPublicId, sessionId } = req.params;
+
+      const session = await SessionModel.findOne({
+        sessionId,
+        userPublicId,
+        isActive: true,
+      }).lean();
+
+      if (!session) throw new NotFoundError("Session not found");
+
+      await revokeSessionFull(
+        session.userId,
+        session.deviceId,
+        session.accessTokenJti,
+        session.accessTokenExpiresAt,
+      );
+
+      await emitOutboxEvent({
+        topic: "auth.events",
+        eventId: generateEventId(),
+        eventType: AuditAction.USER_LOGOUT,
+        action: AuditAction.USER_LOGOUT,
+        status: AuditStatus.SUCCESS,
+        payload: {
+          targetUserPublicId: userPublicId,
+          adminId: req.user?.userId,
+          killedSessionId: sessionId,
+          killedDeviceName: session.deviceName,
+        },
+        aggregateType: "ADMIN_SESSION_KILL",
+        aggregateId: userPublicId,
+        version: 1,
+        context: req.context,
+      });
+
+      return res
+        .status(StatusCodes.OK)
+        .json({ ok: true, message: "Session terminated" });
     },
   );
 }

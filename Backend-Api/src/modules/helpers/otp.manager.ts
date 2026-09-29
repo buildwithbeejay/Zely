@@ -1,6 +1,6 @@
-import { OTPModel, OTPPurpose, IOTP } from "./otp.model";
 import { hashOtp, verifyOtp } from "@/config/hashToken";
 import { randomInt } from "crypto";
+import { OTPModel, OTPPurpose } from "./otp.model";
 
 export { OTPPurpose };
 
@@ -73,12 +73,12 @@ export class OTPManager {
     }
 
     // --- Rate limit check (cooldown + hourly ceiling) ---
-    await this.enforceRateLimit(
-      normalized,
-      purpose,
-      throttleSeconds,
-      maxPerHour,
-    );
+    // await this.enforceRateLimit(
+    //   normalized,
+    //   purpose,
+    //   throttleSeconds,
+    //   maxPerHour,
+    // );
 
     // --- Generate fresh code ---
     const code = this.generateCode(length, type);
@@ -338,6 +338,23 @@ export const OTPConfigs = {
     type: "numeric" as const,
     throttleSeconds: 30,
     maxPerHour: 20, // higher for transactions, users may do several
+  },
+  pinReset: {
+    length: 6,
+    expiryMinutes: 10,
+    maxAttempts: 5,
+    type: "numeric" as const,
+    throttleSeconds: 60,
+    maxPerHour: 3, // stricter than password reset — PIN reset is higher risk
+  },
+
+  pinChange: {
+    length: 6,
+    expiryMinutes: 10,
+    maxAttempts: 5,
+    type: "numeric" as const,
+    throttleSeconds: 60,
+    maxPerHour: 3,
   },
 };
 

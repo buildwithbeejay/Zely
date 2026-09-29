@@ -7,12 +7,8 @@ export async function markOldTokenForDeletionAfter(
   graceMs: number,
 ) {
   const hashed = hashToken(oldToken);
-  // `hashPrefix` may not be defined on the typed config; access dynamically
-  const prefix = (config.redis as any).hashPrefix ?? "";
-  const key = `${prefix}${hashed}`;
+  const key = `${config.redis.refreshTokenHashPrefix}${hashed}`;
 
-  // Use Redis EXPIRE to delete key after grace window
-  // Convert ms → seconds
   const seconds = Math.ceil(graceMs / 1000);
   await redis.expire(key, seconds);
 }
