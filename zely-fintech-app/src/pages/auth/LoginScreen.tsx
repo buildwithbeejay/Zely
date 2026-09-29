@@ -14,6 +14,7 @@ const LoginScreen: React.FC = () => {
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [rateLimitSeconds, setRateLimitSeconds] = useState(0);
   const location = useLocation();
   const { auth } = useAuth();
   const [errors, setErrors] = useState<{ email?: string; password?: string }>(
@@ -26,6 +27,23 @@ const LoginScreen: React.FC = () => {
       navigate(from, { replace: true });
     }
   }, [auth]);
+
+  useEffect(() => {
+    if (rateLimitSeconds <= 0) return;
+
+    const timer = setInterval(() => {
+      setRateLimitSeconds((prev) => Math.max(prev - 1, 0));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [rateLimitSeconds]);
+
+  const formatCountdown = (seconds: number) => {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+
+    return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+  };
 
   const validateEmail = (value: string) => {
     if (!value) return "Email is required";
@@ -85,10 +103,20 @@ const LoginScreen: React.FC = () => {
 
         navigate(redirectTo, { replace: true });
       } catch (error: any) {
-        const msg =
-          error.response?.data?.message ||
+        console.log(error);
+
+        const data = error.response?.data;
+
+        const message =
+          data?.error?.message ||
+          data?.message ||
           "Login failed. Please check your credentials.";
-        showToast("error", msg);
+
+        if (data?.error?.code === "RATE_LIMIT_EXCEEDED") {
+          setRateLimitSeconds(data.error.retryAfter ?? 0);
+        }
+
+        showToast("error", message);
       }
     } catch (error: any) {
       const msg = error.response?.data?.message || "";
@@ -253,10 +281,16 @@ const LoginScreen: React.FC = () => {
 
         <button
           type="submit"
-          disabled={isLoading}
+          disabled={isLoading || rateLimitSeconds > 0}
           className="w-full flex justify-center items-center py-3.5 px-4 border border-transparent rounded-xl text-base font-bold text-white bg-slate-900 dark:bg-primary hover:opacity-90 transition-all transform hover:scale-[1.01] active:scale-[0.99] disabled:opacity-70 !mt-8"
         >
-          {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Log In"}
+          {isLoading ? (
+            <Loader2 className="w-5 h-5 animate-spin" />
+          ) : rateLimitSeconds > 0 ? (
+            `Try again in ${formatCountdown(rateLimitSeconds)}`
+          ) : (
+            "Log In"
+          )}
         </button>
       </form>
 

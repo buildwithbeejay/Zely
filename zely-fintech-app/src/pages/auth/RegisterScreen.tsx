@@ -1,18 +1,18 @@
-import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { authService } from "@/services/auth.services";
 import {
-  Mail,
+  AlertCircle,
+  Check,
+  Loader2,
   Lock,
+  Mail,
   Unlock,
   User,
-  Check,
-  AlertCircle,
-  Loader2,
 } from "lucide-react";
-import AuthLayout from "../../layouts/AuthLayout";
-import { useToast } from "../../context/ToastContext";
+import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/AuthProvider";
-import { authService } from "@/services/auth.services";
+import { useToast } from "../../context/ToastContext";
+import AuthLayout from "../../layouts/AuthLayout";
 
 const RegisterScreen: React.FC = () => {
   const navigate = useNavigate();

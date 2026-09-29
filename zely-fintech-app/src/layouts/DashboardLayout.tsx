@@ -10,7 +10,7 @@ import {
   Shield,
   Sun,
 } from "lucide-react";
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import Sidebar from "../components/dashboard/Sidebar";
 import { useToast } from "../context/ToastContext";
@@ -18,15 +18,14 @@ import { authService } from "../services/auth.services";
 // import ChatAssistant from '../components/ChatAssistant';
 import { useDashboardData } from "../context/DashboardDataContext";
 
+import { useNotifications } from "@/context/notificationCOntext";
+import { queryKeys } from "@/utils/queryKey";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   BalanceUpdatePayload,
   NotificationPayload,
   useSocket,
 } from "../hooks/useSockets";
-import { transactionService } from "../services/transactionService";
-import { useNotifications } from "@/context/notificationCOntext";
-import { useQueryClient } from "@tanstack/react-query";
-import { queryKeys } from "@/utils/queryKey";
 
 const DashboardLayoutInner: React.FC = () => {
   const navigate = useNavigate();

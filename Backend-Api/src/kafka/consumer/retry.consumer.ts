@@ -35,12 +35,15 @@ import {
   KYC_RETRY_LEVELS,
   PAYMENT_MAX_RETRIES,
   PAYMENT_RETRY_LEVELS,
+  PIN_MAX_RETRIES,
+  PIN_RETRY_LEVELS,
   TRANSFER_MAX_RETRIES,
   TRANSFER_RETRY_LEVELS,
   VAULT_MAX_RETRIES,
   VAULT_RETRY_LEVELS,
 } from "../retry.helpers/retry.policy";
 import { validateWithSchema } from "../schema/zod.helper";
+import { pinProcessor } from "@/events/pinProcessor.evt";
 
 // retry.ready.ts
 let markReady: () => void;
@@ -102,7 +105,11 @@ const PROCESSOR_REGISTRY: Record<ProcessorType, ProcessorConfig> = {
     retryLevels: PAYMENT_RETRY_LEVELS,
     maxRetries: PAYMENT_MAX_RETRIES,
   },
-
+  pin: {
+    processor: pinProcessor,
+    retryLevels: PIN_RETRY_LEVELS,
+    maxRetries: PIN_MAX_RETRIES,
+  },
   funding: {
     processor: processFundingEvents,
     retryLevels: FUNDING_RETRY_LEVELS,
@@ -131,6 +138,7 @@ const ALL_RETRY_TOPICS = [
   ...KYC_RETRY_LEVELS.map((l) => l.topic),
   ...PAYMENT_RETRY_LEVELS.map((l) => l.topic),
   ...FUNDING_RETRY_LEVELS.map((l) => l.topic),
+  ...PIN_RETRY_LEVELS.map((l) => l.topic),
 ];
 
 export async function runRetryConsumer() {

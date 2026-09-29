@@ -47,6 +47,19 @@ export interface IUserDocument {
   lastProvisioningRetryAt?: Date;
   lastPasswordResetAt?: Date | null;
   passwordHistory?: string[];
+  transactionPin: {
+    hash: string | null;
+    setAt: Date | null;
+    failedAttempts: number;
+    lockedUntil: Date | null;
+  };
+  pinVersion: number;
+  suspension: {
+    isSuspended: { type: Boolean; default: false };
+    reason: { type: String; default: null };
+    suspendedBy: { type: String; default: null }; // admin userId
+    suspendedAt: { type: Date; default: null };
+  };
 }
 
 // Instance methods interface

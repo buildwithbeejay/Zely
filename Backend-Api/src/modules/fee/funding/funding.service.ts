@@ -1,4 +1,3 @@
-// src/modules/funding/funding.service.ts
 import mongoose, { Types } from "mongoose";
 
 import BadRequestError from "@/shared/errors/badRequest";

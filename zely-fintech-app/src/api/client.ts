@@ -31,7 +31,7 @@ axiosPrivate.interceptors.response.use(
       try {
         if (!refreshPromise) {
           refreshPromise = axiosPrivate
-            .post("/auth/refresh", {}) // cookie sent automatically
+            .post("/auth/refresh-token", {}) // cookie sent automatically
             .then((res) => {
               const newAccessToken = res.data.user.accessToken;
               setAccessToken(newAccessToken);

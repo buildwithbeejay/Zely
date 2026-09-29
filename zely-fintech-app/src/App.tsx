@@ -1,6 +1,11 @@
 import { DashboardDataProvider } from "@/context/DashboardDataContext";
 import { NotificationProvider } from "@/context/notificationCOntext";
+import { SocketProvider } from "@/context/SocketContext";
+import SystemArchitecture from "@/pages/common/SystemArchitecture";
+import EnterTransferPinScreen from "@/pages/dashboard/enterTransactionPIn";
 import NotificationsScreen from "@/pages/dashboard/NotificationScreen";
+import PaymentSessionScreen from "@/pages/dashboard/paymentSessinScreen";
+import LandingPage from "@/pages/landing/LandingPage";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import {
@@ -32,10 +37,10 @@ import TransactionsScreen from "./pages/dashboard/TransactionsScreen";
 import TransfersScreen from "./pages/dashboard/TransfersScreen";
 import WalletsScreen from "./pages/dashboard/WalletsScreen";
 import ProvisioningScreen from "./pages/onboarding/ProvisioningScreen";
-import LandingPage from "@/pages/landing/LandingPage";
-import SystemArchitecture from "@/pages/common/SystemArchitecture";
-import PaymentSessionScreen from "@/pages/dashboard/paymentSessinScreen";
-import { SocketProvider } from "@/context/SocketContext";
+import AdminFeesScreen from "@/pages/admin/adminFeeScreen";
+import AdminReversalDetailScreen from "@/pages/admin/AdminReversalScreenDetails";
+import AdminReversalsScreen from "@/pages/admin/adminReversalScreen";
+import AdminDLQScreen from "@/pages/admin/adminDLQ";
 //import UtilityBillsScreen from './pages/dashboard/UtilityBillsScreen';
 
 const queryClient = new QueryClient({
@@ -92,7 +97,7 @@ const App: React.FC = () => {
                   element={<ResetPasswordScreen />}
                 />
                 <Route path="/verify" element={<TwoFactorScreen />} />
-                {/* <Route path="/unauthorized" element={<UnauthorizedScreen />} /> */}
+                <Route path="/unauthorized" element={<UnauthorizedScreen />} />
 
                 {/* Protected Onboarding */}
                 <Route element={<RequireAuth />}>
@@ -130,6 +135,14 @@ const App: React.FC = () => {
                     <Route
                       path="/payments/session/:intentId"
                       element={<PaymentSessionScreen />}
+                    />
+                    <Route
+                      path="/transfers/pin"
+                      element={<EnterTransferPinScreen />}
+                    />
+                    <Route
+                      path="/transfers/enter-pin"
+                      element={<Navigate to="/transfers/pin" replace />}
                     />
                     <Route
                       path="/transactions"
@@ -173,6 +186,10 @@ const App: React.FC = () => {
                       element={<AdminDashboardScreen />}
                     />
                     <Route
+                      path="/admin/users/:userId"
+                      element={<AdminDashboardScreen />}
+                    />
+                    <Route
                       path="/admin/wallet-funding"
                       element={<AdminDashboardScreen />}
                     />
@@ -191,6 +208,22 @@ const App: React.FC = () => {
                     <Route
                       path="/admin/reconciliation/:runId"
                       element={<AdminReconciliationDetailScreen />}
+                    />
+
+                    {/* MOVED inside the layout wrapper: */}
+                    <Route path="/admin/dlq" element={<AdminDLQScreen />} />
+                    <Route
+                      path="/admin/reversals"
+                      element={<AdminReversalsScreen />}
+                    />
+                    <Route
+                      path="/admin/reversals/:reversalId"
+                      element={<AdminReversalDetailScreen />}
+                    />
+                    <Route path="/admin/fees" element={<AdminFeesScreen />} />
+                    <Route
+                      path="/admin/fee-accruals"
+                      element={<Navigate to="/admin/fees" replace />}
                     />
                   </Route>
                 </Route>

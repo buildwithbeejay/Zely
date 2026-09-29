@@ -86,6 +86,35 @@ const userSchema = new Schema<User, UserModel, IUserMethods>(
       enum: Object.values(UserRole),
       default: UserRole.USER,
     },
+    transactionPin: {
+      hash: {
+        type: String,
+        default: null,
+        select: false,
+      },
+      setAt: {
+        type: Date,
+        default: null,
+      },
+      failedAttempts: {
+        type: Number,
+        default: 0,
+      },
+      lockedUntil: {
+        type: Date,
+        default: null,
+      },
+    },
+    pinVersion: {
+      type: Number,
+      default: 0,
+    },
+    suspension: {
+      isSuspended: { type: Boolean, default: false },
+      reason: { type: String, default: null },
+      suspendedBy: { type: String, default: null }, // admin userId
+      suspendedAt: { type: Date, default: null },
+    },
     security: {
       failedLoginAttempts: {
         type: Number,

@@ -57,6 +57,16 @@ export const VAULT_RETRY_LEVELS = [
   { topic: "funding.retry.5", delayMs: 3_600_000 }, // 1 hour
 ];
 
+export const PIN_RETRY_LEVELS = [
+  { topic: "pin.retry.1", delayMs: 5_000 }, // 5 seconds
+  { topic: "pin.retry.2", delayMs: 30_000 }, // 30 seconds
+  { topic: "pin.retry.3", delayMs: 120_000 }, // 2 minutes
+  { topic: "pin.retry.4", delayMs: 600_000 }, // 10 minutes
+  { topic: "pin.retry.5", delayMs: 3_600_000 }, // 1 hour
+];
+
+export const PIN_MAX_RETRIES = PIN_RETRY_LEVELS.length;
+
 export const VAULT_MAX_RETRIES = VAULT_RETRY_LEVELS.length;
 
 export function resolveRetryPolicy(aggregateType: string) {
@@ -95,6 +105,12 @@ export function resolveRetryPolicy(aggregateType: string) {
       return {
         levels: VAULT_RETRY_LEVELS,
         maxRetries: VAULT_MAX_RETRIES,
+      };
+
+    case "PIN":
+      return {
+        levels: PIN_RETRY_LEVELS,
+        maxRetries: PIN_MAX_RETRIES,
       };
 
     default:

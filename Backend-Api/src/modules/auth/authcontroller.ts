@@ -6,6 +6,7 @@ import {
   setRefreshCookie,
 } from "@/infrastructure/helpers/cookie.helper";
 import {
+  changePasswordLimiters,
   confirmResetCodeLimiters,
   forgotPasswordLimiters,
   loginLimiters,
@@ -31,6 +32,7 @@ import validateRequest from "shared/middleware/validation.middleware";
 import { UserRole } from "./authinterface";
 import authService from "./authservice";
 import validationSchema from "./authvalidation";
+import authvalidation from "./authvalidation";
 
 class AuthController implements Controller {
   public path = "/auth";
@@ -88,6 +90,13 @@ class AuthController implements Controller {
       `${this.path}/reset-password`,
       ...resetPasswordLimiters,
       this.resetPassword,
+    );
+    this.route.post(
+      `${this.path}/change-password`,
+      requireAuth,
+      ...changePasswordLimiters, // ← add
+      validateRequest(validationSchema.changePassword, "body"),
+      this.changePassword,
     );
     this.route.post(`${this.path}/logout`, ...logoutLimiters, this.logout);
     this.route.post(
@@ -306,6 +315,24 @@ class AuthController implements Controller {
       );
 
       return res.status(StatusCodes.OK).json(response);
+    },
+  );
+
+  private changePassword = asyncWrapper(
+    async (req: IAuthRequest, res: Response) => {
+      const { currentPassword, newPassword, confirmPassword } = req.body;
+      const userSub = req.user!.sub;
+      const context = getRequestContext(req);
+
+      const result = await this.authService.changePassword(
+        userSub,
+        currentPassword,
+        newPassword,
+        confirmPassword,
+        req.user!.deviceId, // ← add this
+        context,
+      );
+      return res.status(StatusCodes.OK).json(result);
     },
   );
 }

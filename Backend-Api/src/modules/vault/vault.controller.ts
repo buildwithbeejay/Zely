@@ -9,7 +9,10 @@ import { generateIdempotencyKey } from "@/shared/utils/id.generator";
 import { Response, Router } from "express";
 import { StatusCodes } from "http-status-codes";
 import asyncWrapper from "shared/middleware/async.wrapper";
-import { requireAuth } from "shared/middleware/auth.middleware";
+import {
+  requireAuth,
+  requireFreshSession,
+} from "shared/middleware/auth.middleware";
 import vaultService from "./vault.service";
 
 class VaultController implements Controller {
@@ -36,11 +39,17 @@ class VaultController implements Controller {
     this.route.post(
       `${this.path}/:vaultId/withdraw`,
       requireAuth,
+      requireFreshSession,
       this.withdraw,
     );
     this.route.get(`${this.path}`, requireAuth, this.listVaults);
     this.route.get(`${this.path}/:vaultId`, requireAuth, this.getVault);
-    this.route.delete(`${this.path}/:vaultId`, requireAuth, this.closeVault);
+    this.route.delete(
+      `${this.path}/:vaultId`,
+      requireAuth,
+      requireFreshSession,
+      this.closeVault,
+    );
   }
 
   private createVault = asyncWrapper(

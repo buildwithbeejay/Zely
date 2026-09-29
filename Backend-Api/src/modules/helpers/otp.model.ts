@@ -1,12 +1,13 @@
 import { Schema, model, Document } from "mongoose";
 
-
 export enum OTPPurpose {
-  EMAIL_VERIFICATION = 'email_verification',
-  PASSWORD_RESET = 'password_reset',
-  TWO_FACTOR = 'two_factor',
-  PHONE_VERIFICATION = 'phone_verification',
-  TRANSACTION_CONFIRM = 'transaction_confirm'
+  EMAIL_VERIFICATION = "email_verification",
+  PASSWORD_RESET = "password_reset",
+  TWO_FACTOR = "two_factor",
+  PHONE_VERIFICATION = "phone_verification",
+  TRANSACTION_CONFIRM = "transaction_confirm",
+  PIN_RESET = "pin_reset",
+  PIN_CHANGE = "pin_change",
 }
 
 export interface IOTP extends Document {
@@ -33,11 +34,10 @@ const otpSchema = new Schema<IOTP>({
   createdAt: { type: Date, default: Date.now },
 });
 
-
 // Fast lookup for the active OTP for a given (identifier, purpose) pair
 otpSchema.index({ identifier: 1, purpose: 1, consumedAt: 1 });
 
-// TTL — Mongo deletes docs ~60s after expiresAt. Acts as cleanup, not correctness check. 
+// TTL — Mongo deletes docs ~60s after expiresAt. Acts as cleanup, not correctness check.
 otpSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 // For rate-limit lookups: "how many OTPs has this identifier created recently?"
