@@ -1,12 +1,15 @@
 import {
   Activity,
+  AlertOctagon,
   ArrowLeftRight,
+  Coins,
   Download,
   History as HistoryIcon,
   Home,
   List,
   LogOut,
   PiggyBank,
+  RotateCcw,
   Settings,
   ShieldCheck,
   TrendingUp,
@@ -87,6 +90,13 @@ const Sidebar: React.FC<SidebarProps> = ({
         icon: Activity,
         label: "System Reconciliation",
       },
+      { path: "/admin/dlq", icon: AlertOctagon, label: "DLQ Events" },
+      {
+        path: "/admin/reversals",
+        icon: RotateCcw,
+        label: "Reversals & Credits",
+      },
+      { path: "/admin/fees", icon: Coins, label: "Fee Accruals" },
     );
   }
 
@@ -114,15 +124,14 @@ const Sidebar: React.FC<SidebarProps> = ({
             <button
               key={item.path}
               onClick={() => handleNav(item.path)}
-              style={index === 3 ? { height: "60px" } : undefined}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all duration-200 ${
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold text-left transition-all duration-200 ${
                 isActive(item.path)
                   ? "bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-lg shadow-slate-200 dark:shadow-none"
                   : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white"
               }`}
             >
-              <item.icon className="w-4 h-4" />
-              {item.label}
+              <item.icon className="w-4 h-4 shrink-0" />
+              <span className="text-left">{item.label}</span>
             </button>
           ))}
         </nav>

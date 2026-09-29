@@ -49,6 +49,7 @@ export const transactionService = {
     type: "internal" | "p2p";
     recipientAccountNumber?: string;
     recipientEmail?: string;
+    pin?: string;
     destWalletId?: string;
   }) => {
     const response = await axiosPrivate.post(
@@ -57,6 +58,7 @@ export const transactionService = {
         amount: data.amount,
         to: data.recipientAccountNumber,
         currency: "NGN",
+        pin: data.pin, // ← was missing
       },
       {
         headers: {

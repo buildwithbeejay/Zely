@@ -13,6 +13,7 @@ import {
   ChevronDown,
   CreditCard,
   Download,
+  Key,
   Landmark,
   Loader2,
   RefreshCw,
@@ -437,64 +438,64 @@ const TransfersScreen: React.FC = () => {
   };
 
   const confirmTransfer = async () => {
+    if (transferType === "p2p") {
+      // P2P — navigate to PIN screen, transfer happens there
+      navigate("/transfers/pin", {
+        state: {
+          transferType: "p2p",
+          sourceId,
+          sourceAccount: getAccount(sourceId),
+          recipient: recipientName
+            ? { name: recipientName, accountNumber: p2pRecipient }
+            : { name: p2pRecipient, accountNumber: p2pRecipient },
+          amount,
+          displayAmount: formatCurrency(amount),
+        },
+      });
+      return;
+    }
+
+    // Internal transfer — no PIN required, call API directly
     setTransferStatus("processing");
 
     try {
-      if (transferType === "internal") {
-        // Internal transfer — no fee, different endpoint
-        const sourceWallet = wallets?.find(
-          (w: { walletId: string }) => w.walletId === sourceId,
-        );
-        const destWallet = wallets?.find(
-          (w: { walletId: string }) => w.walletId === destId,
-        );
+      const sourceWallet = wallets?.find(
+        (w: { walletId: string }) => w.walletId === sourceId,
+      );
+      const destWallet = wallets?.find(
+        (w: { walletId: string }) => w.walletId === destId,
+      );
 
-        if (!sourceWallet || !destWallet) {
-          showToast("error", "Invalid wallet selection");
-          setTransferStatus("idle");
-          return;
-        }
-
-        await axiosPrivate.post(
-          "/transfer/internal",
-          {
-            amount: Number(amount),
-            currency: "NGN",
-            fromType: sourceWallet.walletType,
-            toType: destWallet.walletType,
-          },
-          {
-            headers: {
-              "X-Idempotency-Key": generateIdempotencyKey(),
-            },
-          },
-        );
-      } else {
-        // P2P transfer
-        await transactionService.transfer({
-          amount: Number(amount),
-          accountId: sourceId,
-          type: "p2p",
-          recipientAccountNumber: p2pRecipient,
-        });
+      if (!sourceWallet || !destWallet) {
+        showToast("error", "Invalid wallet selection");
+        setTransferStatus("idle");
+        return;
       }
 
-      // Refresh wallets after either transfer type
+      await axiosPrivate.post(
+        "/transfer/internal",
+        {
+          amount: Number(amount),
+          currency: "NGN",
+          fromType: sourceWallet.walletType,
+          toType: destWallet.walletType,
+        },
+        {
+          headers: {
+            "X-Idempotency-Key": generateIdempotencyKey(),
+          },
+        },
+      );
+
       refreshWallets();
       refreshTransactions();
 
-      const finalRecipient =
-        transferType === "internal"
-          ? getAccount(destId)?.name || "Savings"
-          : (recipientName ?? p2pRecipient);
-
+      const finalRecipient = getAccount(destId)?.name || "Savings";
       setLastTransaction({ amount, recipient: finalRecipient });
       setTransferStatus("success");
       showToast("success", "Transfer completed successfully");
       setAmount("");
       setDisplayAmount("");
-      setP2pRecipient("");
-      setRecipientName(null);
       setFee(null);
       setTotalDeducted(null);
     } catch (error: any) {
@@ -964,15 +965,23 @@ const TransfersScreen: React.FC = () => {
             <div className="flex gap-4 mt-8">
               <button
                 onClick={() => setTransferStatus("idle")}
-                className="flex-1 py-4 border border-slate-200 dark:border-slate-700 rounded-xl font-bold hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                className="flex-1 py-4 border border-slate-200 dark:border-slate-700 rounded-xl font-bold hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 Edit
               </button>
               <button
                 onClick={confirmTransfer}
-                className="flex-[2] py-4 bg-primary text-white rounded-xl font-bold hover:bg-primary-light transition-colors shadow-lg shadow-primary/25 flex items-center justify-center gap-2"
+                className="flex-[2] py-4 bg-primary text-white rounded-xl font-bold hover:bg-primary-light transition-colors shadow-lg shadow-primary/25 flex items-center justify-center gap-2 cursor-pointer"
               >
-                <CheckCircle2 className="w-5 h-5" /> Confirm Transfer
+                {transferType === "p2p" ? (
+                  <>
+                    <Key className="w-5 h-5" /> Proceed to Enter PIN
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-5 h-5" /> Confirm Transfer
+                  </>
+                )}
               </button>
             </div>
           </div>

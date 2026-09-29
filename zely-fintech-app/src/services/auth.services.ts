@@ -127,6 +127,7 @@ export const authService = {
       phone?: string;
       address?: string;
       createdAt: string;
+      passwordChangedAt: string;
     };
   }> => {
     const response = await axiosPrivate.get("/users/profile");
