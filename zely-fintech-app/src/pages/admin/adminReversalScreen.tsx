@@ -29,6 +29,7 @@ import {
   ReversalType,
 } from "@/services/reversal.service";
 import { InitiateReversalModal } from "@/components/admin/initiateReversalModal";
+import { ManualCreditModal } from "@/components/admin/ManualCreditModal";
 
 export const AdminReversalsScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -57,10 +58,10 @@ export const AdminReversalsScreen: React.FC = () => {
   const loadData = async () => {
     setLoading(true);
     try {
-      const data = await reversalService.getReversals();
-      setReversals(data);
+      const { reversals } = await reversalService.getReversals();
+      setReversals(reversals);
     } catch (err: any) {
-      showToast("error", "Failed to load reversals records");
+      showToast("error", "Failed to load reversal records");
     } finally {
       setLoading(false);
     }
@@ -97,10 +98,10 @@ export const AdminReversalsScreen: React.FC = () => {
           (item.paymentRef && item.paymentRef.toLowerCase().includes(q)) ||
           item.initiatedBy.toLowerCase().includes(q) ||
           item.notes.toLowerCase().includes(q) ||
-          item.sender.name.toLowerCase().includes(q) ||
-          item.receiver.name.toLowerCase().includes(q) ||
-          item.sender.userPublicId.toLowerCase().includes(q) ||
-          item.receiver.userPublicId.toLowerCase().includes(q);
+          (item.sender?.name?.toLowerCase().includes(q) ?? false) ||
+          (item.receiver?.name?.toLowerCase().includes(q) ?? false) ||
+          (item.sender?.userPublicId?.toLowerCase().includes(q) ?? false) ||
+          (item.receiver?.userPublicId?.toLowerCase().includes(q) ?? false);
         if (!matches) return false;
       }
       return true;
@@ -503,13 +504,19 @@ export const AdminReversalsScreen: React.FC = () => {
       <InitiateReversalModal
         isOpen={isInitiateModalOpen}
         onClose={() => setIsInitiateModalOpen(false)}
-        onSuccess={() => loadData()}
+        onSuccess={(reversal) => {
+          loadData();
+          navigate(`/admin/reversals/${reversal.reversalId}`);
+        }}
       />
 
       <ManualCreditModal
         isOpen={isManualCreditModalOpen}
         onClose={() => setIsManualCreditModalOpen(false)}
-        onSuccess={() => loadData()}
+        onSuccess={(reversal, creditedAmount) => {
+          loadData();
+          navigate(`/admin/reversals/${reversal.reversalId}`);
+        }}
       />
     </div>
   );

@@ -13,7 +13,7 @@ export function extractRequestContext(req: IAuthRequest): IRequestContext {
     email: req.user?.email || req.body?.email || undefined,
     ip: getClientIp(req),
     userAgent: req.get("user-agent") || "UNKNOWN_AGENT",
-    deviceId: req.cookies.deviceId,
+    deviceId: req.deviceId,
     deviceType: getDeviceType(req.get("user-agent")),
     timestamp: new Date(),
   };
@@ -94,13 +94,10 @@ export function requireDeviceId(
   res: Response,
   next: NextFunction,
 ): void {
-  const deviceId = req.get("x-device-id");
-
-  if (!deviceId) {
+  if (!req.deviceId) {
     res.status(400).json({
       success: false,
       message: "Device ID is required",
-      hint: "Include X-Device-ID header with your request",
     });
     return;
   }
@@ -113,7 +110,8 @@ export function deviceMiddleware(
   res: Response,
   next: NextFunction,
 ) {
-  let deviceId = req.cookies?.deviceId;
+  let deviceId =
+    req.get("x-device-id") || req.cookies?.deviceId || req.deviceId;
 
   if (!deviceId) {
     deviceId = generateDeviceId();

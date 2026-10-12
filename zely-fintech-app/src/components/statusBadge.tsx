@@ -3,7 +3,10 @@ interface StatusBadgeProps {
 }
 
 export function StatusBadge({ status }: StatusBadgeProps) {
-  const label = status.replace(/_/g, " ");
+  const label =
+    status === "TRANSACTION_COMPLETED"
+      ? "Completed"
+      : status.replace(/_/g, " ");
 
   const normalized = status.toUpperCase();
 
@@ -15,7 +18,8 @@ export function StatusBadge({ status }: StatusBadgeProps) {
         : normalized.includes("READY") ||
             normalized.includes("VERIFIED") ||
             normalized === "ACTIVE" ||
-            normalized === "COMPLETED"
+            normalized === "COMPLETED" ||
+            normalized === "TRANSACTION_COMPLETED"
           ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400"
           : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400";
 

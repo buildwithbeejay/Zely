@@ -11,7 +11,7 @@ import {
 } from "../ledger/ledger.entry.model";
 import TransactionBuilder from "../ledger/ledger.transaction.builder";
 import { PaymentInitialization } from "../payments/payment.initialization.model";
-import { Wallet } from "../wallet/wallet.model";
+import { Wallet, WalletStatus } from "../wallet/wallet.model";
 import {
   ReversalModel,
   ReversalReason,
@@ -21,12 +21,14 @@ import {
 
 import { IRequestContext } from "@/config/interfaces/request.interface";
 import { emitOutboxEvent } from "@/infrastructure/helpers/emit.audit.helper";
+import User from "@/modules/auth/authmodel";
 import FundingService from "@/modules/fee/funding/funding.service";
 import BadRequestError from "@/shared/errors/badRequest";
 import { NotFoundError } from "@/shared/errors/notFoundError";
 import { generateEventId } from "@/shared/utils/id.generator";
 import { logger } from "@/shared/utils/logger";
 import { AuditAction, AuditStatus } from "../audit/audit.interface";
+import { FeeAccrual, FeeAccrualStatus } from "@/modules/fee/fee.accrual.model";
 
 class ReversalService {
   // ─── Scenario 1: Admin reversal of completed transfer ──────────────────────
@@ -73,28 +75,53 @@ class ReversalService {
     }
 
     // ─── Load original ledger entries ─────────────────────────────────────
-    const originalEntries = await LedgerEntry.find({
+    const mainEntries = await LedgerEntry.find({
       transactionRef: originalTransactionRef,
+      referenceType: LedgerEntryType.P2P_TRANSFER,
     }).lean();
 
-    if (!originalEntries.length) {
+    console.log("mainEntries", mainEntries);
+
+    if (!mainEntries.length) {
       throw new NotFoundError(
-        `No ledger entries found for transactionRef: ${originalTransactionRef}`,
+        `No P2P ledger entries found for transactionRef: ${originalTransactionRef}`,
       );
     }
 
-    // Separate main transfer entries from fee entries
-    const mainEntries = originalEntries.filter(
-      (e) => e.referenceType !== LedgerEntryType.FEE,
-    );
-    const feeEntries = originalEntries.filter(
-      (e) => e.referenceType === LedgerEntryType.FEE,
-    );
+    const referenceIds = new Set(mainEntries.map((entry) => entry.referenceId));
+
+    if (referenceIds.size !== 1) {
+      throw new BadRequestError(
+        "Original transfer ledger entries have inconsistent reference IDs",
+      );
+    }
+
+    const referenceId = mainEntries[0].referenceId;
+
+    const feeEntries = await LedgerEntry.find({
+      referenceId,
+      referenceType: LedgerEntryType.FEE,
+    }).lean();
+
+    // ─── Guard: fee already waived — prevent double refund ────────────────
+    if (reverseFee && feeEntries.length > 0) {
+      const feeAlreadyWaived = await FeeAccrual.findOne({
+        feeTransactionRef: `${originalTransactionRef}-FEE`,
+        status: FeeAccrualStatus.WAIVED,
+      }).lean();
+
+      if (feeAlreadyWaived) {
+        throw new BadRequestError(
+          "FEE_ALREADY_WAIVED_AND_REFUNDED — set reverseFee to false to avoid double refund",
+        );
+      }
+    }
 
     // ─── Find the sender (DEBIT entry) and receiver (CREDIT entry) ───────
     const senderEntry = mainEntries.find(
       (e) => e.type === LedgerEntryType.DEBIT,
     );
+
     const receiverEntry = mainEntries.find(
       (e) => e.type === LedgerEntryType.CREDIT,
     );
@@ -116,7 +143,9 @@ class ReversalService {
     }
 
     const originalAmount = receiverEntry.amount;
-    const originalFee = feeEntries.reduce((sum, e) => sum + e.amount, 0);
+    const originalFee = feeEntries
+      .filter((entry) => entry.type === "DEBIT")
+      .reduce((sum, entry) => sum + entry.amount, 0);
     const reversalAmount = reverseFee
       ? originalAmount + originalFee
       : originalAmount;
@@ -172,12 +201,13 @@ class ReversalService {
         throw new NotFoundError("Could not load ledger accounts for reversal");
       }
 
-      const builder = new TransactionBuilder("REVERSAL");
+      const mainBuilder = new TransactionBuilder("REVERSAL");
 
-      // Reversal is the mirror of the original:
+      // ─── Main transfer reversal ───────────────────────────────────────────
       // Original: DEBIT sender, CREDIT receiver
       // Reversal: DEBIT receiver, CREDIT sender
-      builder.addDebit({
+
+      mainBuilder.addDebit({
         ledgerAccountId: receiverLedger._id,
         amount: originalAmount,
         currency: senderEntry.currency,
@@ -187,7 +217,7 @@ class ReversalService {
         referenceType: LedgerEntryType.REVERSAL,
       });
 
-      builder.addCredit({
+      mainBuilder.addCredit({
         ledgerAccountId: senderLedger._id,
         amount: originalAmount,
         currency: senderEntry.currency,
@@ -197,40 +227,70 @@ class ReversalService {
         referenceType: LedgerEntryType.REVERSAL,
       });
 
-      // Reverse the fee too if requested
+      await mainBuilder.commit(session);
+
+      // ─── Fee reversal ────────────────────────────────────────────────────
       if (reverseFee && feeEntries.length > 0) {
-        const treasuryLedger = await LedgerAccount.findOne({
+        const revenueLedgerAccount = await LedgerAccount.findOne({
           ownerType: LedgerOwnerType.SYSTEM,
-          type: LedgerAccountType.SYSTEM_TREASURY,
+          type: LedgerAccountType.SYSTEM_REVENUE,
           currency: senderEntry.currency,
         }).session(session);
 
-        if (treasuryLedger) {
-          // Debit treasury (reverse the fee it received)
-          builder.addDebit({
-            ledgerAccountId: treasuryLedger._id,
-            amount: originalFee,
-            currency: senderEntry.currency,
-            nature: LedgerEntryNature.DEBIT,
-            transactionRef: `${reversalTransactionRef}_FEE`,
-            referenceId: reversal.reversalId,
-            referenceType: LedgerEntryType.REVERSAL,
-          });
+        if (!revenueLedgerAccount) {
+          throw new BadRequestError(
+            `Revenue ledger account not found for currency: ${senderEntry.currency}`,
+          );
+        }
 
-          // Credit sender (return the fee they paid)
-          builder.addCredit({
-            ledgerAccountId: senderLedger._id,
-            amount: originalFee,
-            currency: senderEntry.currency,
-            nature: LedgerEntryNature.CREDIT,
-            transactionRef: `${reversalTransactionRef}_FEE`,
-            referenceId: reversal.reversalId,
-            referenceType: LedgerEntryType.REVERSAL,
-          });
+        const feeReversalRef = `${reversalTransactionRef}_FEE`;
+
+        const feeBuilder = new TransactionBuilder("REVERSAL");
+
+        // Treasury gives the fee back
+        feeBuilder.addDebit({
+          ledgerAccountId: revenueLedgerAccount._id,
+          amount: originalFee,
+          currency: senderEntry.currency,
+          nature: LedgerEntryNature.DEBIT,
+          transactionRef: feeReversalRef,
+          referenceId: reversal.reversalId,
+          referenceType: LedgerEntryType.REVERSAL,
+        });
+
+        // Sender receives the fee back
+        feeBuilder.addCredit({
+          ledgerAccountId: senderLedger._id,
+          amount: originalFee,
+          currency: senderEntry.currency,
+          nature: LedgerEntryNature.CREDIT,
+          transactionRef: feeReversalRef,
+          referenceId: reversal.reversalId,
+          referenceType: LedgerEntryType.REVERSAL,
+        });
+
+        await feeBuilder.commit(session);
+
+        const revenueWallet = await Wallet.findOne({
+          ledgerAccountId: revenueLedgerAccount._id,
+        }).session(session);
+
+        if (!revenueWallet) {
+          throw new NotFoundError("Revenue wallet not found for fee reversal");
+        }
+
+        const updatedRevenue = await Wallet.findOneAndUpdate(
+          { _id: revenueWallet._id, version: revenueWallet.version },
+          { $inc: { availableBalance: -originalFee, version: 1 } },
+          { session, new: true },
+        );
+
+        if (!updatedRevenue) {
+          throw new BadRequestError(
+            "Revenue wallet was modified by another operation — please retry the reversal",
+          );
         }
       }
-
-      await builder.commit(session);
 
       // ─── Update wallet balances ─────────────────────────────────────────
       const newReceiverBalance =
@@ -249,11 +309,17 @@ class ReversalService {
         );
       }
 
-      await Wallet.findOneAndUpdate(
+      const updatedSender = await Wallet.findOneAndUpdate(
         { _id: senderWallet._id, version: senderWallet.version },
-        { $inc: { availableBalance: reversalAmount } },
-        { session },
+        { $inc: { availableBalance: reversalAmount, version: 1 } },
+        { session, new: true },
       );
+
+      if (!updatedSender) {
+        throw new BadRequestError(
+          "Sender wallet was modified by another operation — please retry the reversal",
+        );
+      }
 
       // ─── Update reversal record ─────────────────────────────────────────
       await ReversalModel.updateOne(
@@ -336,7 +402,11 @@ class ReversalService {
         receiverWentNegative: newReceiverBalance < 0,
       });
 
-      return reversal;
+      const updatedReversal = await ReversalModel.findOne({
+        _id: reversal._id,
+      }).lean();
+
+      return this.populateParties(updatedReversal);
     } catch (err: any) {
       if (!committed) await session.abortTransaction();
 
@@ -357,7 +427,7 @@ class ReversalService {
     }
   }
 
-  // ─── Scenario 2: Manual credit for missed Paystack webhook ─────────────────
+  // ─── Scenario 2: Manual credit for missed Paystack webhook
   public async initiateManualCredit(params: {
     paymentRef: string;
     notes: string;
@@ -366,7 +436,7 @@ class ReversalService {
   }) {
     const { paymentRef, notes, adminPublicId, context } = params;
 
-    // ─── Find the PaymentInitialization ──────────────────────────────────
+    // ─── Find the PaymentInitialization
     const payment = await PaymentInitialization.findOne({
       reference: paymentRef,
     }).lean();
@@ -381,7 +451,7 @@ class ReversalService {
       );
     }
 
-    // ─── Guard: wallet already credited ──────────────────────────────────
+    // ─── Guard: wallet already credited
     const alreadyCredited = await LedgerEntry.exists({
       referenceId: paymentRef,
       referenceType: LedgerEntryType.EXTERNAL_DEPOSIT,
@@ -406,7 +476,7 @@ class ReversalService {
       );
     }
 
-    // ─── Create reversal record ───────────────────────────────────────────
+    // Create reversal record
     const reversal = await ReversalModel.create({
       type: ReversalType.MANUAL_CREDIT,
       status: ReversalStatus.PENDING,
@@ -425,7 +495,7 @@ class ReversalService {
     });
 
     try {
-      // ─── Reuse FundingService — same flow as a real webhook credit ──────
+      // Reuse FundingService — same flow as a real webhook credit
       const fundingResult = await (
         FundingService as typeof FundingService & {
           creditFromExternalSource: (params: {
@@ -493,14 +563,66 @@ class ReversalService {
     }
   }
 
-  // ─── Get a single reversal ──────────────────────────────────────────────────
   public async getReversal(reversalId: string) {
     const reversal = await ReversalModel.findOne({ reversalId }).lean();
     if (!reversal) throw new NotFoundError(`Reversal not found: ${reversalId}`);
-    return reversal;
+    return this.populateParties(reversal);
   }
 
-  // ─── List reversals with filters ───────────────────────────────────────────
+  private async populateParties(reversal: any) {
+    const isPaystack = reversal.senderPublicId === "PAYSTACK";
+
+    const [senderUser, receiverUser, receiverWallet] = await Promise.all([
+      isPaystack
+        ? Promise.resolve(null)
+        : User.findOne({ userId: reversal.senderPublicId })
+            .select("userId name email")
+            .lean(),
+      User.findOne({ userId: reversal.receiverPublicId })
+        .select("userId name email")
+        .lean(),
+      Wallet.findOne({
+        userPublicId: reversal.receiverPublicId,
+        type: "MAIN_CHECKINGS",
+      })
+        .select("status")
+        .lean(),
+    ]);
+
+    return {
+      ...reversal,
+      receiverFrozen: receiverWallet?.status === WalletStatus.FROZEN,
+      sender: isPaystack
+        ? {
+            userPublicId: "PAYSTACK",
+            name: "Paystack Payment Gateway",
+            email: "settlement@paystack.co",
+          }
+        : senderUser
+          ? {
+              userPublicId: senderUser.userId,
+              name: senderUser.name,
+              email: senderUser.email,
+            }
+          : {
+              userPublicId: reversal.senderPublicId,
+              name: "Unknown User",
+              email: "—",
+            },
+      receiver: receiverUser
+        ? {
+            userPublicId: receiverUser.userId,
+            name: receiverUser.name,
+            email: receiverUser.email,
+          }
+        : {
+            userPublicId: reversal.receiverPublicId,
+            name: "Unknown User",
+            email: "—",
+          },
+    };
+  }
+
   public async listReversals(params: {
     type?: ReversalType;
     status?: ReversalStatus;
@@ -538,8 +660,12 @@ class ReversalService {
       ReversalModel.countDocuments(filter),
     ]);
 
+    const populated = await Promise.all(
+      reversals.map((r) => this.populateParties(r)),
+    );
+
     return {
-      reversals,
+      reversals: populated,
       pagination: {
         total,
         page,

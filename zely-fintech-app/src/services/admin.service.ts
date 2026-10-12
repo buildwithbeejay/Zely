@@ -36,6 +36,8 @@ export interface AdminTransactionRow {
   penaltyReason?: string;
   occurredAt: string;
   rowKey: string;
+  reversalId?: string | null;
+  isReversed?: boolean;
 }
 
 export interface AdminTransactionsQuery {
@@ -50,6 +52,7 @@ export interface AdminTransactionsQuery {
   limit?: number;
   sort?: string;
   order?: "asc" | "desc";
+  category?: string;
 }
 
 export interface AdminUsersQuery {

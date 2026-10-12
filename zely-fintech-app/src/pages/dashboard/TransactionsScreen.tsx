@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Download,
   Loader2,
+  RotateCcw,
   Search,
 } from "lucide-react";
 import React, { useEffect, useState } from "react";
@@ -127,13 +128,15 @@ const TransactionsScreen: React.FC = () => {
   const toTransactionModal = (tx: ApiTransaction): Transaction => ({
     id: tx.transactionId ?? tx.id ?? "",
     title:
-      tx.category === "INTERNAL_TRANSFER"
-        ? tx.direction === "debit"
-          ? `Moved to ${tx.counterpartyWalletType === "MAIN_CHECKINGS" ? "Main Checking" : "Savings"}`
-          : `Moved from ${tx.counterpartyWalletType === "MAIN_CHECKINGS" ? "Main Checking" : "Savings"}`
-        : tx.direction === "debit"
-          ? `Sent to ${tx.counterpartyName ?? "Unknown"}`
-          : `Received from ${tx.counterpartyName ?? "Unknown"}`,
+      tx.category === "REVERSAL"
+        ? (tx.name ?? "Reversal")
+        : tx.category === "INTERNAL_TRANSFER"
+          ? tx.direction === "debit"
+            ? `Moved to ${tx.counterpartyWalletType === "MAIN_CHECKINGS" ? "Main Checking" : "Savings"}`
+            : `Moved from ${tx.counterpartyWalletType === "MAIN_CHECKINGS" ? "Main Checking" : "Savings"}`
+          : tx.direction === "debit"
+            ? `Sent to ${tx.counterpartyName ?? "Unknown"}`
+            : `Received from ${tx.counterpartyName ?? "Unknown"}`,
     category: tx.category,
     amount: tx.amount,
     date: tx.occurredAt,
@@ -149,9 +152,11 @@ const TransactionsScreen: React.FC = () => {
       tx.direction === "debit" ? "outgoing" : ("incoming" as TransactionType),
     notes: `${tx.walletType} • ${tx.currency}`,
     recipientName:
-      tx.direction === "debit"
+      tx.category === "REVERSAL"
         ? (tx.counterpartyName ?? undefined)
-        : (tx.counterpartyName ?? undefined),
+        : tx.direction === "debit"
+          ? (tx.counterpartyName ?? undefined)
+          : (tx.counterpartyName ?? undefined),
     fee: tx.fee,
     penaltyReason: tx.penaltyReason,
   });
@@ -295,16 +300,20 @@ const TransactionsScreen: React.FC = () => {
                         <div className="flex items-center gap-3">
                           <div
                             className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
-                              tx.status === "PENDING"
-                                ? "bg-yellow-100 text-yellow-600 dark:bg-yellow-900/20 dark:text-yellow-400"
-                                : tx.status === "CANCELLED"
-                                  ? "bg-red-100 text-red-500 dark:bg-red-900/20 dark:text-red-400"
-                                  : tx.direction === "credit"
-                                    ? "bg-green-100 text-green-600 dark:bg-green-900/20 dark:text-green-400"
-                                    : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                              tx.category === "REVERSAL"
+                                ? "bg-purple-100 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400"
+                                : tx.status === "PENDING"
+                                  ? "bg-yellow-100 text-yellow-600 dark:bg-yellow-900/20 dark:text-yellow-400"
+                                  : tx.status === "CANCELLED"
+                                    ? "bg-red-100 text-red-500 dark:bg-red-900/20 dark:text-red-400"
+                                    : tx.direction === "credit"
+                                      ? "bg-green-100 text-green-600 dark:bg-green-900/20 dark:text-green-400"
+                                      : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
                             }`}
                           >
-                            {tx.direction === "credit" ? (
+                            {tx.category === "REVERSAL" ? (
+                              <RotateCcw className="w-4 h-4" />
+                            ) : tx.direction === "credit" ? (
                               <ArrowDownLeft className="w-4 h-4" />
                             ) : (
                               <ArrowUpRight className="w-4 h-4" />
@@ -312,27 +321,19 @@ const TransactionsScreen: React.FC = () => {
                           </div>
                           <div>
                             <h4 className="font-bold text-slate-900 dark:text-white text-sm group-hover:text-primary transition-colors line-clamp-1">
-                              {tx.category === "INTERNAL_TRANSFER"
-                                ? tx.direction === "debit"
-                                  ? `Moved to ${
-                                      tx.counterpartyWalletType ===
-                                      "MAIN_CHECKINGS"
-                                        ? "Main Checking"
-                                        : "Savings"
-                                    }`
-                                  : `Moved from ${
-                                      tx.counterpartyWalletType ===
-                                      "MAIN_CHECKINGS"
-                                        ? "Main Checking"
-                                        : "Savings"
-                                    }`
-                                : tx.category === "VAULT_WITHDRAWAL"
-                                  ? "Vault Withdrawal"
-                                  : tx.category === "VAULT_DEPOSIT"
-                                    ? "Vault Deposit"
-                                    : tx.direction === "debit"
-                                      ? `Payment Sent to ${tx.counterpartyName ?? "Unknown"}`
-                                      : `Payment Received from ${tx.counterpartyName ?? "Unknown"}`}
+                              {tx.category === "REVERSAL"
+                                ? tx.name
+                                : tx.category === "INTERNAL_TRANSFER"
+                                  ? tx.direction === "debit"
+                                    ? `Moved to ${tx.counterpartyWalletType === "MAIN_CHECKINGS" ? "Main Checking" : "Savings"}`
+                                    : `Moved from ${tx.counterpartyWalletType === "MAIN_CHECKINGS" ? "Main Checking" : "Savings"}`
+                                  : tx.category === "VAULT_WITHDRAWAL"
+                                    ? "Vault Withdrawal"
+                                    : tx.category === "VAULT_DEPOSIT"
+                                      ? "Vault Deposit"
+                                      : tx.direction === "debit"
+                                        ? `Payment Sent to ${tx.counterpartyName ?? "Unknown"}`
+                                        : `Payment Received from ${tx.counterpartyName ?? "Unknown"}`}
                             </h4>
                             <p className="text-[10px] sm:text-xs text-slate-500 dark:text-slate-400 font-medium">
                               {tx.category}

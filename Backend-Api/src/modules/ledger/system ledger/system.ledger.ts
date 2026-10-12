@@ -1,39 +1,33 @@
-import BadRequestError from "@/shared/errors/badRequest";
-import mongoose, { Types } from "mongoose";
-import {
-  generateReferenceId,
-  generateTransactionId,
-} from "@/shared/utils/id.generator";
+import { IRequestContext } from "@/config/interfaces/request.interface";
 import { emitOutboxEvent } from "@/infrastructure/helpers/emit.audit.helper";
 import { AuditAction, AuditStatus } from "@/modules/audit/audit.interface";
-import ensureSystemLedger from "./create.system.ledger";
-import TransactionBuilder from "../ledger.transaction.builder";
+import {
+  extEnsureIdempotence,
+  markCompleted,
+} from "@/modules/helpers/ext.idempotence";
 import {
   ensureWalletsAreActive,
   lookUpLedgerAccountForAdmin,
-  resolveAccountByAccountNumber,
+  resolveAccountByUserId,
   resolveWallet,
 } from "@/modules/helpers/resolvers";
+import { Wallet, WalletType } from "@/modules/wallet/wallet.model";
+import BadRequestError from "@/shared/errors/badRequest";
 import {
-  markCompleted,
-  extEnsureIdempotence,
-} from "@/modules/helpers/ext.idempotence";
-import {
-  IUser,
-  Wallet,
-  WalletDocument,
-  WalletType,
-} from "@/modules/wallet/wallet.model";
+  generateEventId,
+  generateReferenceId,
+  generateTransactionId,
+} from "@/shared/utils/id.generator";
+import mongoose from "mongoose";
 import { LedgerAccountType, LedgerOwnerType } from "../ledger.account.model";
-import { IRequestContext } from "@/config/interfaces/request.interface";
+import TransactionBuilder from "../ledger.transaction.builder";
+import ensureSystemLedger from "./create.system.ledger";
 
-interface IWalletPopulated extends Omit<WalletDocument, "userId"> {
-  userId: IUser;
-}
+// Auto-generate idempotency key if not provided
 
 export interface FundUsersRequest {
   users: {
-    accountNumber: string;
+    userId: string;
     amount: number;
     idempotencyKey?: string;
   }[];
@@ -45,12 +39,15 @@ class SystemLedger {
     context: IRequestContext,
   ) {
     const fundedUsers: {
-      accountNumber: string;
+      userId: string;
       amount: number;
       transactionRef: string;
     }[] = [];
 
     for (const user of users) {
+      const idempotencyKey =
+        user.idempotencyKey ?? `IDP_${Date.now()}_${generateEventId()}`;
+
       const session = await mongoose.startSession();
       session.startTransaction();
 
@@ -62,16 +59,13 @@ class SystemLedger {
         }
 
         // --- Idempotency check ---
-        if (user.idempotencyKey) {
-          const { alreadyCompleted, response } = await extEnsureIdempotence(
-            user.idempotencyKey,
-          );
+        const { alreadyCompleted, response } =
+          await extEnsureIdempotence(idempotencyKey);
 
-          if (alreadyCompleted) {
-            fundedUsers.push(response);
-            await session.commitTransaction();
-            continue;
-          }
+        if (alreadyCompleted) {
+          fundedUsers.push(response);
+          await session.commitTransaction();
+          continue;
         }
 
         const ensureSystem = await ensureSystemLedger("NGN");
@@ -82,8 +76,8 @@ class SystemLedger {
         });
 
         // --- Resolve user account and wallet ---
-        const account = await resolveAccountByAccountNumber(
-          user.accountNumber,
+        const account = await resolveAccountByUserId(
+          user.userId,
           "MAIN_CHECKINGS",
           "NGN",
           session,
@@ -166,7 +160,7 @@ class SystemLedger {
         }).session(session);
 
         // --- Mark idempotency ---
-        await markCompleted(user.idempotencyKey as string, transactionRef, {
+        await markCompleted(idempotencyKey as string, transactionRef, {
           transactionRef: txn.transactionRef,
         });
 
@@ -220,17 +214,14 @@ class SystemLedger {
         await session.commitTransaction();
 
         fundedUsers.push({
-          accountNumber: user.accountNumber,
+          userId: user.userId,
           amount: user.amount,
           transactionRef: txn.transactionRef as string,
         });
       } catch (error: any) {
         await session.abortTransaction();
 
-        console.error(
-          `Failed funding user ${user.accountNumber}:`,
-          error.message,
-        );
+        console.error(`Failed funding user ${user.userId}:`, error.message);
         throw error;
       } finally {
         await session.endSession();

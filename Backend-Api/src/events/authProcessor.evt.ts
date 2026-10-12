@@ -146,7 +146,7 @@ export async function processAuthEvent(
       }
       case "USER_VERIFY_EMAIL_SUCCESS":
         try {
-          // 1️⃣ Fetch user
+          // Fetch user
           const user = await User.findOne({
             userId: payload.userId,
             accountStatus: accountStatus.EMAIL_VERIFIED,
@@ -167,7 +167,7 @@ export async function processAuthEvent(
             );
           }
 
-          // 2️⃣ Transition user → ACCOUNT_PROVISIONING
+          // Transition user → ACCOUNT_PROVISIONING
           const updatedUser = await User.findOneAndUpdate(
             {
               userId: payload.userId,

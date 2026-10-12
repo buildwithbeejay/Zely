@@ -44,6 +44,13 @@ import {
   vaultTransferRequest,
   vaultWithrawalRequest,
 } from "./transfer.interface";
+import { checkAndAutoRecoverWallet } from "@/modules/wallet/wallet.recovery";
+import {
+  FeeAccrual,
+  FeeAccrualStatus,
+  FeeCategory,
+} from "@/modules/fee/fee.accrual.model";
+import { generateAccrualId } from "@/shared/utils/id.generator";
 
 class TransferService {
   public async p2pTransfer(
@@ -146,7 +153,15 @@ class TransferService {
         session,
       });
 
+      console.log(`Before config: ${tier}`);
+
       const config = await TransactionLimitConfig.findOne({ tier: tier });
+
+      if (!config) {
+        throw new NotFoundError(
+          `Transaction limit config not found for tier: ${tier}`,
+        );
+      }
 
       await enforceReceiverBalanceCap({
         receiverWallet,
@@ -169,6 +184,8 @@ class TransferService {
         dto.currency,
         "P2P_TRANSFER",
       );
+
+      console.log(fee, totalDeducted);
 
       const senderWalletLocked = await lockWalletFunds(
         senderWallet._id,
@@ -223,6 +240,17 @@ class TransferService {
         { session, new: true },
       );
 
+      if (updatedReceiverWallet) {
+        await checkAndAutoRecoverWallet({
+          userPublicId: receiverWallet.userPublicId,
+          walletId: receiverWallet.walletId,
+          newBalance: updatedReceiverWallet.availableBalance,
+          currentStatus: receiverWallet.status,
+          freezeReason: receiverWallet.freezeReason,
+          session,
+        });
+      }
+
       /** -------------------------
        * OUTBOX EVENT
        * ------------------------- */
@@ -274,6 +302,33 @@ class TransferService {
       );
 
       await session.commitTransaction();
+
+      if (fee > 0) {
+        try {
+          await FeeAccrual.create({
+            accrualId: generateAccrualId(),
+            transactionRef: result.transactionRef,
+            feeTransactionRef: `${result.transactionRef}-FEE`,
+            payerUserId: senderAccount.userPublicId,
+            payerName: senderWallet.userId.name,
+            category: FeeCategory.P2P_TRANSFER,
+            amount: fee,
+            currency: dto.currency,
+            transitAccount: "sys_fees_pool",
+            status: FeeAccrualStatus.ACCRUED,
+          });
+        } catch (err: any) {
+          if (err.code !== 11000) {
+            logger.warn(
+              "FeeAccrual creation failed after successful P2P transfer",
+              {
+                transactionRef: result.transactionRef,
+                error: err.message,
+              },
+            );
+          }
+        }
+      }
 
       // Commit limits to Redis after successful transaction
       await commitTransactionLimits({

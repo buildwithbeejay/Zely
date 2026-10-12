@@ -66,6 +66,13 @@ class ReconciliationController implements Controller {
       isAdmin,
       this.reconcilePaystackSettlements,
     );
+
+    this.route.get(
+      `${this.path}/summary`,
+      requireAuth,
+      isAdmin,
+      this.getSummary,
+    );
   }
 
   private runFullReconciliation = asyncWrapper(
@@ -163,6 +170,13 @@ class ReconciliationController implements Controller {
           ctx,
         );
 
+      return res.status(StatusCodes.OK).json({ ok: true, data: result });
+    },
+  );
+
+  private getSummary = asyncWrapper(
+    async (req: IAuthRequest, res: Response) => {
+      const result = await this.reconciliationService.getSummary();
       return res.status(StatusCodes.OK).json({ ok: true, data: result });
     },
   );

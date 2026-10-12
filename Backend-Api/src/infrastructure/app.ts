@@ -74,6 +74,7 @@ import {
   ReconciliationStatus,
 } from "@/modules/reconciliation/reconciliation.model";
 import { runPinConsumer } from "@/kafka/consumer/pinconsumer";
+import { runReversalConsumer } from "@/kafka/consumer/reversal.consumer";
 
 class App {
   public express: Application;
@@ -165,6 +166,7 @@ class App {
       await runPaymentConsumer();
       await runKycConsumer();
       await runFundingConsumer();
+      await runReversalConsumer();
       await startDLQSink();
 
       // Retry consumer starts and connects, but blocks on retryReadySignal

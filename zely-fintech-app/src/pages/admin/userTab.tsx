@@ -110,8 +110,9 @@ export default function UsersTab() {
     order: sort.order,
     page,
     status,
-    role,
+    role: "USER",
     kycTier,
+    limit: 100,
   });
 
   if (selectedUserId) {

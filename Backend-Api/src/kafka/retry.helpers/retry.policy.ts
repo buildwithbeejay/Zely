@@ -50,11 +50,19 @@ export const FUNDING_RETRY_LEVELS = [
 export const FUNDING_MAX_RETRIES = FUNDING_RETRY_LEVELS.length;
 
 export const VAULT_RETRY_LEVELS = [
-  { topic: "funding.retry.1", delayMs: 5_000 }, // 5 seconds
-  { topic: "funding.retry.2", delayMs: 30_000 }, // 30 seconds
-  { topic: "funding.retry.3", delayMs: 120_000 }, // 2 minutes
-  { topic: "funding.retry.4", delayMs: 600_000 }, // 10 minutes
-  { topic: "funding.retry.5", delayMs: 3_600_000 }, // 1 hour
+  { topic: "vault.retry.1", delayMs: 5_000 },
+  { topic: "vault.retry.2", delayMs: 30_000 },
+  { topic: "vault.retry.3", delayMs: 120_000 },
+  { topic: "vault.retry.4", delayMs: 600_000 },
+  { topic: "vault.retry.5", delayMs: 3_600_000 },
+];
+
+export const REVERSAL_RETRY_LEVELS = [
+  { topic: "reversal.retry.1", delayMs: 5_000 },
+  { topic: "reversal.retry.2", delayMs: 30_000 },
+  { topic: "reversal.retry.3", delayMs: 120_000 },
+  { topic: "reversal.retry.4", delayMs: 600_000 },
+  { topic: "reversal.retry.5", delayMs: 3_600_000 },
 ];
 
 export const PIN_RETRY_LEVELS = [
@@ -67,6 +75,7 @@ export const PIN_RETRY_LEVELS = [
 
 export const PIN_MAX_RETRIES = PIN_RETRY_LEVELS.length;
 
+export const REVERSAL_MAX_RETRIES = REVERSAL_RETRY_LEVELS.length;
 export const VAULT_MAX_RETRIES = VAULT_RETRY_LEVELS.length;
 
 export function resolveRetryPolicy(aggregateType: string) {
@@ -111,6 +120,11 @@ export function resolveRetryPolicy(aggregateType: string) {
       return {
         levels: PIN_RETRY_LEVELS,
         maxRetries: PIN_MAX_RETRIES,
+      };
+    case "REVERSAL":
+      return {
+        levels: REVERSAL_RETRY_LEVELS,
+        maxRetries: REVERSAL_MAX_RETRIES,
       };
 
     default:

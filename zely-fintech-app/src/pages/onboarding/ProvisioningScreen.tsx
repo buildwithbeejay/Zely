@@ -1,14 +1,14 @@
 import {
   AlertCircle,
   CheckCircle2,
+  Copy,
   Database,
   Globe,
   Loader2,
-  Shield,
-  Zap,
-  Copy,
-  Terminal,
   RefreshCw,
+  Shield,
+  Terminal,
+  Zap,
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -35,16 +35,23 @@ const ProvisioningScreen: React.FC = () => {
   const pollStartTime = useRef<number>(Date.now());
   const [takingLong, setTakingLong] = useState(false);
 
+  const STOP_POLL_TIME_MS = 5 * 60 * 1000;
+  const [stalled, setStalled] = useState(false);
+
   const getTimestamp = () => {
     return new Date().toTimeString().split(" ")[0];
   };
-  const pollInterval = useRef<any>(null);
+  const stepRef = useRef(0);
+  const runIdRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const failCountRef = useRef(0);
+  const [canRetry, setCanRetry] = useState(true);
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
-  const elapsed = Date.now() - pollStartTime.current;
-  if (elapsed > MAX_POLL_TIME_MS) {
-    setTakingLong(true);
-  }
+  // const elapsed = Date.now() - pollStartTime.current;
+  // if (elapsed > MAX_POLL_TIME_MS) {
+  //   setTakingLong(true);
+  // }
 
   const steps = [
     {
@@ -102,16 +109,16 @@ const ProvisioningScreen: React.FC = () => {
     },
   ];
 
-  {
-    takingLong && !error && (
-      <div className="mt-8 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-2xl text-center">
-        <p className="text-sm font-semibold text-yellow-700 dark:text-yellow-400">
-          This is taking longer than expected. Your account is still being set
-          up — you can safely close this page and check back later.
-        </p>
-      </div>
-    );
-  }
+  // {
+  //   takingLong && !error && (
+  //     <div className="mt-8 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-2xl text-center">
+  //       <p className="text-sm font-semibold text-yellow-700 dark:text-yellow-400">
+  //         This is taking longer than expected. Your account is still being set
+  //         up — you can safely close this page and check back later.
+  //       </p>
+  //     </div>
+  //   );
+  // }
 
   // Handle appending live, simulated retro system logs
   const appendLogs = (newLogs: string[]) => {
@@ -127,10 +134,10 @@ const ProvisioningScreen: React.FC = () => {
     }
   }, [logs]);
 
-  const copyToClipboard = (num: string, type: "current" | "savings") => {
+  const copyToClipboard = async (num: string, type: "current" | "savings") => {
     try {
       const cleanNum = num.replace(/\s+/g, "");
-      navigator.clipboard.writeText(cleanNum);
+      await navigator.clipboard.writeText(cleanNum);
       setCopiedType(type);
       showToast(
         "success",
@@ -139,23 +146,44 @@ const ProvisioningScreen: React.FC = () => {
       setTimeout(() => setCopiedType(null), 2000);
     } catch (err) {
       console.warn("Clipboard action failed", err);
+      showToast("error", "Couldn't copy. Please copy the number manually.");
     }
   };
 
-  const startPolling = () => {
-    if (pollInterval.current) clearInterval(pollInterval.current);
+  const stopPolling = () => {
+    runIdRef.current += 1; // invalidates any in-flight tick
+    if (timerRef.current) clearTimeout(timerRef.current);
+  };
 
-    // Pre-populate initial stage logs
+  const startPolling = () => {
+    stopPolling();
+    const runId = runIdRef.current;
+    failCountRef.current = 0;
+    pollStartTime.current = Date.now();
+    setTakingLong(false);
     setLogs([
       `[${getTimestamp()}] SYSTEM: Initializing core account deployment pipelines...`,
       `[${getTimestamp()}] SYSTEM: Connecting bank registry servers for provisioning...`,
     ]);
 
-    const checkStatus = async () => {
+    const tick = async () => {
+      if (runId !== runIdRef.current) return;
+
+      const elapsed = Date.now() - pollStartTime.current;
+      if (elapsed > MAX_POLL_TIME_MS) setTakingLong(true);
+      if (elapsed > STOP_POLL_TIME_MS) {
+        setStalled(true);
+        stopPolling();
+        return;
+      }
+
       try {
         const data = await authService.getProvisioningStatus();
+        if (runId !== runIdRef.current) return; // stale response, ignore
+        failCountRef.current = 0;
 
         if (data.status === "ACCOUNT_READY") {
+          stepRef.current = 4;
           setStep(4);
           setCheckingAccount(data.accounts?.checking || "");
           setSavingsAccount(data.accounts?.savings || "");
@@ -164,60 +192,39 @@ const ProvisioningScreen: React.FC = () => {
             "ACCOUNT_READY: All configurations successfully deployment-aligned!",
             "ACTIVE: Ready to receive external deposits.",
           ]);
-          if (pollInterval.current) clearInterval(pollInterval.current);
+          stopPolling();
           return;
         }
 
-        // Backend signalled a hard failure
         if (data.failed) {
+          setCanRetry(!!data.canRetry);
           setError(true);
-          clearInterval(pollInterval.current);
+          stopPolling();
           return;
         }
-
-        // Map status to step index and trigger state updates
-        let nextStepIndex = 0;
-        if (data.status === "ACCOUNT_PROVISION_STARTED") nextStepIndex = 0;
-        else if (data.status === "WALLETS_CREATED") nextStepIndex = 1;
-        else if (data.status === "LEDGERS_CREATED") nextStepIndex = 2;
-        else if (data.status === "ACCOUNTS_CREATED") nextStepIndex = 3;
-
-        setStep((current) => {
-          if (current !== nextStepIndex) {
-            // Append step-specific logs when transitioning to a new step
-            appendLogs(steps[nextStepIndex].logGroup);
-          }
-          return nextStepIndex;
-        });
       } catch (err: any) {
-        const errMsg =
-          err instanceof Error
-            ? err.message
-            : String(
-                err || "Connection timed out during backend configuration.",
-              );
-        console.warn("Provisioning poll failed but handled:", errMsg);
-        appendLogs([
-          `CRITICAL_ERROR: ${errMsg}`,
-          "DIAGNOSTIC: Error code 0x7E3 - Core general ledger service returned bad connection.",
-        ]);
-        setErrorMessage(errMsg);
-        setError(true);
-        if (pollInterval.current) clearInterval(pollInterval.current);
+        if (runId !== runIdRef.current) return;
+        failCountRef.current += 1;
+        if (failCountRef.current >= 3) {
+          const msg = err?.message || "Connection timed out.";
+          appendLogs([`CRITICAL_ERROR: ${msg}`]);
+          setErrorMessage(msg);
+          setError(true);
+          stopPolling();
+          return;
+        }
       }
+
+      timerRef.current = setTimeout(tick, 2000); // next request only after this one finishes
     };
 
-    checkStatus();
-    pollInterval.current = setInterval(checkStatus, 2000);
+    tick();
   };
 
   useEffect(() => {
     startPolling();
-
-    return () => {
-      if (pollInterval.current) clearInterval(pollInterval.current);
-    };
-  }, [navigate]);
+    return stopPolling;
+  }, []);
 
   const handleRetry = async () => {
     setIsRetrying(true);
@@ -227,12 +234,23 @@ const ProvisioningScreen: React.FC = () => {
     ]);
     try {
       await authService.retryProvisioning();
-      setError(false);
+      stepRef.current = 0;
       setStep(0);
+      setError(false);
+      setErrorMessage("");
       startPolling();
-    } catch (err) {
-      showToast("error", "Retry failed");
-      appendLogs(["ERROR: Connection retry aborted by cloud system rules."]);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || "";
+      const wait = msg.match(/RETRY_TOO_SOON_WAIT_(\d+)_SECONDS/);
+      showToast(
+        "error",
+        wait
+          ? `Please wait ${wait[1]} seconds before trying again.`
+          : msg.includes("MAX_PROVISIONING_RETRIES")
+            ? "Maximum retries reached. Please contact support."
+            : "Retry failed. Please try again.",
+      );
+      appendLogs(["ERROR: Retry request was rejected."]);
     } finally {
       setIsRetrying(false);
     }
@@ -271,6 +289,22 @@ const ProvisioningScreen: React.FC = () => {
           </div>
         </div>
 
+        {takingLong && !error && step !== 4 && (
+          <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-2xl text-center">
+            <p className="text-sm font-semibold text-yellow-700">
+              This is taking longer than expected. Your account is still being
+              set up. You can safely close this page and check back later.
+            </p>
+            {stalled && (
+              <button
+                onClick={startPolling}
+                className="mt-3 px-4 py-2 bg-slate-900 text-white text-sm font-bold rounded-xl"
+              >
+                Check again
+              </button>
+            )}
+          </div>
+        )}
         {!error ? (
           step === 4 ? (
             // ACCOUNT READY SUCCESS STATE (Modern high-contrast white card)
@@ -408,10 +442,11 @@ const ProvisioningScreen: React.FC = () => {
                       cx="50%"
                       cy="50%"
                       r="43%"
+                      pathLength={100}
                       className="stroke-primary fill-transparent transition-all duration-1000 ease-in-out"
                       strokeWidth="8"
-                      strokeDasharray="270"
-                      strokeDashoffset={270 - (270 * currentPercentage) / 100}
+                      strokeDasharray="100"
+                      strokeDashoffset={100 - currentPercentage}
                       strokeLinecap="round"
                     />
                   </svg>
@@ -582,44 +617,46 @@ const ProvisioningScreen: React.FC = () => {
             </div>
 
             <h2 className="text-2xl font-black mb-3 text-slate-900 tracking-tight">
-              Provisioning Database Sync Timeout
+              {canRetry
+                ? "Account Setup Hit a Problem"
+                : "We Couldn't Finish Setting Up"}
             </h2>
             <p className="text-slate-500 text-sm max-w-md mx-auto mb-8 leading-relaxed">
-              A connection timeout was experienced while configuring core
-              transaction databases. Your personal information remains secure.
-              Please trigger a system diagnostic reload to try again.
+              {canRetry
+                ? "Something went wrong while setting up your accounts. Your personal information remains secure. Please try again."
+                : "We've tried several times without success. Please contact support and we'll get this sorted out for you."}
             </p>
 
-            <div className="max-w-lg mx-auto bg-slate-50 border border-slate-200 rounded-2xl p-5 mb-8 text-left font-mono text-[11px] text-slate-500 space-y-2.5 shadow-inner animate-in fade-in duration-300">
-              <p className="text-red-600 font-bold">
-                /// DIAGNOSTICS TRACE 0x00A38
-              </p>
-              <p>PROVISIONING STATE: INIT_RETRY_REQUIRED</p>
-              <p>PRIMARY DATABASE HOST: main-banking-cluster.ledger.internal</p>
-              <p className="text-slate-500">
-                ERROR_DETAIL:{" "}
-                {errorMessage ||
-                  "Simulated timeout while assigning Savings and Current Account records."}
-              </p>
-            </div>
+            {errorMessage && (
+              <div className="max-w-lg mx-auto bg-slate-50 border border-slate-200 rounded-2xl p-5 mb-8 text-left font-mono text-[11px] text-slate-500 shadow-inner">
+                <p className="text-red-600 font-bold mb-1">Details</p>
+                <p>{errorMessage}</p>
+              </div>
+            )}
 
-            <button
-              onClick={handleRetry}
-              disabled={isRetrying}
-              className="inline-flex items-center justify-center gap-2 px-10 py-4.5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:pointer-events-none shadow-lg shadow-slate-900/10 w-full sm:w-auto"
-            >
-              {isRetrying ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Syncing Accounts...</span>
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="w-5 h-5" />
-                  <span>Re-align Bank General Ledgers</span>
-                </>
-              )}
-            </button>
+            {canRetry ? (
+              <button
+                onClick={handleRetry}
+                disabled={isRetrying}
+                className="inline-flex items-center justify-center gap-2 px-10 py-4 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:pointer-events-none shadow-lg shadow-slate-900/10 w-full sm:w-auto"
+              >
+                {isRetrying ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span>Retrying...</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="w-5 h-5" />
+                    <span>Try Again</span>
+                  </>
+                )}
+              </button>
+            ) : (
+              <p className="text-sm font-semibold text-slate-700">
+                Please contact support with your registered email.
+              </p>
+            )}
           </div>
         )}
       </div>

@@ -68,4 +68,5 @@ export const TOPICS = {
   PIN_EVENTS_DLQ: "pin.events.dlq",
 
   REVERSAL_EVENTS: "reversal.events",
+  REVERSAL_EVENTS_DLQ: "reversal.events.dlq",
 };

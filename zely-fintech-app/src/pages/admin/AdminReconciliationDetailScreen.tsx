@@ -1,448 +1,698 @@
-import React, { useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Clock, Activity, Search, AlertCircle, AlertTriangle, User, Wallet, HardDrive, Cpu, CheckCircle2, ServerCrash, Unlock, X } from 'lucide-react';
-import { formatRelativeTime } from './AdminReconciliationScreen';
-import { useToast } from '../../context/ToastContext';
+import React, { useState, useEffect, useCallback } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  Activity,
+  ServerCrash,
+  AlertTriangle,
+  ShieldAlert,
+  Clock,
+  Loader2,
+  ExternalLink,
+  X,
+  ChevronDown,
+  ChevronUp,
+  Info,
+} from "lucide-react";
+import { useToast } from "../../context/ToastContext";
+import {
+  reconciliationService,
+  ReconReportDetail,
+  IDriftRecord,
+} from "@/services/reconciliation.service";
 
-interface Drift {
-    ledgerAccountPublicId: string;
-    ownerType: "WALLET" | "USER" | "VAULT" | "SYSTEM";
-    ownerPublicId: string;
-    cachedBalance: number;
-    trueBalance: number;
-    drift: number;
-    severity: "OVERSTATED" | "UNDERSTATED" | "IN_SYNC";
-    action: "ALERT_AND_FREEZE" | "ALERT_ONLY" | "NONE";
-    notes?: string;
+const formatNaira = (n: number) =>
+  `₦${Math.abs(n).toLocaleString("en-NG", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+const SeverityBadge = ({ severity }: { severity: string }) => {
+  const map: Record<string, string> = {
+    OVERSTATED: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+    UNDERSTATED:
+      "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+    IN_SYNC:
+      "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+  };
+  return (
+    <span
+      className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${map[severity] ?? "bg-slate-100 text-slate-600"}`}
+    >
+      {severity}
+    </span>
+  );
+};
+
+const ActionBadge = ({ action }: { action: string }) => {
+  const map: Record<string, string> = {
+    ALERT_AND_FREEZE: "bg-red-100 text-red-700 dark:bg-red-900/30",
+    ALERT_ONLY: "bg-amber-100 text-amber-700 dark:bg-amber-900/30",
+    NONE: "bg-slate-100 text-slate-500 dark:bg-slate-800",
+  };
+  return (
+    <span
+      className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${map[action] ?? "bg-slate-100 text-slate-600"}`}
+    >
+      {action.replace(/_/g, " ")}
+    </span>
+  );
+};
+
+interface ResolveDriftModalProps {
+  drift: IDriftRecord;
+  runId: string;
+  onClose: () => void;
+  onResolved: () => void;
 }
 
-const formatCurrency = (val: number) => {
-    const formatted = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(val);
-    return formatted.replace('NGN', '₦').replace(/\s/g, ''); // Ensure strict ₦ formatting if browser defaults to NGN
-};
+const ResolveDriftModal: React.FC<ResolveDriftModalProps> = ({
+  drift,
+  runId,
+  onClose,
+  onResolved,
+}) => {
+  const { showToast } = useToast();
+  const [resolutionType, setResolutionType] = useState<
+    "CORRECTED" | "FALSE_POSITIVE" | "ESCALATED"
+  >("FALSE_POSITIVE");
+  const [correctionMethod, setCorrectionMethod] = useState<
+    "LEDGER_ENTRY" | "DIRECT_CACHE_SYNC"
+  >("DIRECT_CACHE_SYNC");
+  const [applyCorrection, setApplyCorrection] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-const mockDrifts: Record<string, Drift[]> = {
-    'run_6': [
-        {
-            ledgerAccountPublicId: 'acc_092314',
-            ownerType: 'USER',
-            ownerPublicId: 'usr_5001',
-            cachedBalance: 45000,
-            trueBalance: 40000,
-            drift: 5000,
-            severity: 'OVERSTATED',
-            action: 'ALERT_AND_FREEZE',
-            notes: 'Suspected double-spend attempt during DB latency window'
-        },
-        {
-            ledgerAccountPublicId: 'acc_092315',
-            ownerType: 'WALLET',
-            ownerPublicId: 'wal_7781',
-            cachedBalance: 2000,
-            trueBalance: 2500,
-            drift: -500,
-            severity: 'UNDERSTATED',
-            action: 'ALERT_ONLY',
-            notes: 'Pending fee reversal not synced'
-        },
-        {
-            ledgerAccountPublicId: 'acc_098811',
-            ownerType: 'SYSTEM',
-            ownerPublicId: 'sys_fees_pool',
-            cachedBalance: 1450000,
-            trueBalance: 1448000,
-            drift: 2000,
-            severity: 'OVERSTATED',
-            action: 'NONE',
-            notes: 'Known timing issue with daily settlement script'
-        }
-    ],
-    'run_4': [
-        {
-            ledgerAccountPublicId: 'acc_112001',
-            ownerType: 'VAULT',
-            ownerPublicId: 'vlt_001',
-            cachedBalance: 100000,
-            trueBalance: 105000,
-            drift: -5000,
-            severity: 'UNDERSTATED',
-            action: 'ALERT_ONLY'
-        }
-    ]
-};
-
-const getReportInfo = (runId: string) => {
-    const defaultData = {
-        runId,
-        status: "COMPLETED",
-        startedAt: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
-        finishedAt: new Date(Date.now() - 1000 * 60 * 60 * 24 + 18400).toISOString(),
-        durationMs: 18400,
-        accountsChecked: 15410,
-        driftsFound: mockDrifts[runId]?.length || 0,
-        triggeredBy: "MANUAL",
-        errorMessage: ""
-    };
-    
-    if (runId === 'run_5') return { ...defaultData, status: 'FAILED', driftsFound: 0, errorMessage: "TIMEOUT: Database cluster unresponsive" };
-    return defaultData;
-};
-
-const OwnerIcon = ({ type }: { type: string }) => {
-    switch (type) {
-        case 'WALLET': return <Wallet className="w-4 h-4 text-purple-500" />;
-        case 'USER': return <User className="w-4 h-4 text-primary" />;
-        case 'VAULT': return <HardDrive className="w-4 h-4 text-emerald-500" />;
-        case 'SYSTEM': return <Cpu className="w-4 h-4 text-slate-500" />;
-        default: return <Activity className="w-4 h-4 text-slate-400" />;
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!notes.trim()) {
+      setError("Notes are required");
+      return;
     }
+    setLoading(true);
+    setError(null);
+    try {
+      await reconciliationService.resolveDrift({
+        runId,
+        ledgerAccountPublicId: drift.ledgerAccountPublicId,
+        resolutionType,
+        notes: notes.trim(),
+        applyCorrection: applyCorrection && resolutionType === "CORRECTED",
+        correctionMethod:
+          applyCorrection && resolutionType === "CORRECTED"
+            ? correctionMethod
+            : undefined,
+      });
+      showToast("success", "Drift resolved successfully");
+      onResolved();
+      onClose();
+    } catch (err: any) {
+      setError(
+        err?.response?.data?.message ??
+          err?.message ??
+          "Failed to resolve drift",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+      <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-5 h-5 text-amber-500" />
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+              Resolve Drift
+            </h2>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={loading}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Drift Summary */}
+        <div className="px-6 pt-4 pb-2">
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500">Account</span>
+              <span className="font-mono font-bold text-slate-900 dark:text-white">
+                {drift.ledgerAccountPublicId}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500">Cached Balance</span>
+              <span className="font-mono font-bold text-slate-900 dark:text-white">
+                {formatNaira(drift.cachedBalance)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500">True Ledger Balance</span>
+              <span className="font-mono font-bold text-slate-900 dark:text-white">
+                {formatNaira(drift.trueBalance)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500">Drift</span>
+              <span
+                className={`font-mono font-bold ${drift.drift > 0 ? "text-red-600" : "text-amber-600"}`}
+              >
+                {drift.drift > 0 ? "+" : ""}
+                {formatNaira(drift.drift)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500">Severity</span>
+              <SeverityBadge severity={drift.severity} />
+            </div>
+          </div>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="px-6 pb-6 pt-2 space-y-4">
+          {error && (
+            <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300 font-medium">
+              {error}
+            </div>
+          )}
+
+          {/* Resolution Type */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              Resolution Type
+            </label>
+            <select
+              value={resolutionType}
+              onChange={(e) => setResolutionType(e.target.value as any)}
+              className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+              <option value="FALSE_POSITIVE">
+                False Positive — no action needed
+              </option>
+              <option value="CORRECTED">Corrected — apply fix</option>
+              <option value="ESCALATED">Escalated — needs senior review</option>
+            </select>
+          </div>
+
+          {/* Correction Method — only when CORRECTED */}
+          {resolutionType === "CORRECTED" && (
+            <div className="space-y-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={applyCorrection}
+                  onChange={(e) => setApplyCorrection(e.target.checked)}
+                  className="w-4 h-4 text-primary rounded border-slate-300 focus:ring-primary"
+                />
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  Apply automatic correction
+                </span>
+              </label>
+
+              {applyCorrection && (
+                <div className="space-y-1.5 pl-6">
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Correction Method
+                  </label>
+                  <select
+                    value={correctionMethod}
+                    onChange={(e) => setCorrectionMethod(e.target.value as any)}
+                    className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="DIRECT_CACHE_SYNC">
+                      Direct Cache Sync — update wallet to match ledger
+                    </option>
+                    <option value="LEDGER_ENTRY">
+                      Compensating Ledger Entry — write adjustment entry
+                    </option>
+                  </select>
+                  <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                    ⚠️ This action modifies live balances. Verify the drift
+                    before applying.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Notes */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              Audit Notes <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              rows={3}
+              value={notes}
+              onChange={(e) => {
+                setNotes(e.target.value);
+                setError(null);
+              }}
+              placeholder="Describe why this drift is being resolved this way..."
+              className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+              required
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={loading}
+              className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading || !notes.trim()}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-light text-white text-xs font-bold rounded-xl transition-all disabled:opacity-50"
+            >
+              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+              Resolve Drift
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+const DriftRow: React.FC<{
+  drift: IDriftRecord;
+  runId: string;
+  onResolved: () => void;
+}> = ({ drift, runId, onResolved }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [resolveOpen, setResolveOpen] = useState(false);
+
+  const isResolved = !!drift.resolvedAt;
+
+  return (
+    <>
+      <tr
+        className={`border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer ${
+          isResolved ? "opacity-60" : ""
+        }`}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <td className="px-4 py-3 font-mono text-[11px] text-slate-600 dark:text-slate-400 max-w-[180px] truncate">
+          {drift.ledgerAccountPublicId}
+        </td>
+        <td className="px-4 py-3 text-[11px] text-slate-600 dark:text-slate-400 uppercase">
+          {drift.ownerType}
+        </td>
+        <td className="px-4 py-3">
+          <SeverityBadge severity={drift.severity} />
+        </td>
+        <td className="px-4 py-3">
+          <ActionBadge action={drift.action} />
+        </td>
+        <td className="px-4 py-3 font-mono text-xs font-bold text-slate-900 dark:text-white">
+          {formatNaira(drift.cachedBalance)}
+        </td>
+        <td className="px-4 py-3 font-mono text-xs font-bold text-slate-900 dark:text-white">
+          {formatNaira(drift.trueBalance)}
+        </td>
+        <td
+          className={`px-4 py-3 font-mono text-xs font-bold ${drift.drift > 0 ? "text-red-600" : "text-amber-600"}`}
+        >
+          {drift.drift > 0 ? "+" : ""}
+          {formatNaira(drift.drift)}
+        </td>
+        <td className="px-4 py-3">
+          {isResolved ? (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30">
+              <CheckCircle2 className="w-3 h-3" />
+              {drift.resolutionType}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/30">
+              <Clock className="w-3 h-3" />
+              OPEN
+            </span>
+          )}
+        </td>
+        <td className="px-4 py-3 text-right">
+          <div className="flex items-center justify-end gap-2">
+            {!isResolved && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setResolveOpen(true);
+                }}
+                className="px-2.5 py-1 text-[10px] font-bold text-white bg-primary hover:bg-primary-light rounded-lg transition-colors"
+              >
+                Resolve
+              </button>
+            )}
+            {expanded ? (
+              <ChevronUp className="w-4 h-4 text-slate-400" />
+            ) : (
+              <ChevronDown className="w-4 h-4 text-slate-400" />
+            )}
+          </div>
+        </td>
+      </tr>
+
+      {/* Expanded detail row */}
+      {expanded && (
+        <tr className="bg-slate-50 dark:bg-slate-800/30">
+          <td colSpan={9} className="px-6 py-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+              <div>
+                <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                  Category
+                </span>
+                <span className="font-semibold text-slate-700 dark:text-slate-300">
+                  {drift.category.replace(/_/g, " ")}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                  Owner
+                </span>
+                <span className="font-mono text-slate-700 dark:text-slate-300">
+                  {drift.ownerPublicId}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                  Detected At
+                </span>
+                <span className="text-slate-700 dark:text-slate-300">
+                  {new Date(drift.detectedAt).toLocaleString()}
+                </span>
+              </div>
+              {drift.notes && (
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                    System Notes
+                  </span>
+                  <span className="text-slate-600 dark:text-slate-400">
+                    {drift.notes}
+                  </span>
+                </div>
+              )}
+              {isResolved && (
+                <>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                      Resolved By
+                    </span>
+                    <span className="font-mono text-slate-700 dark:text-slate-300">
+                      {drift.resolvedBy}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                      Resolved At
+                    </span>
+                    <span className="text-slate-700 dark:text-slate-300">
+                      {new Date(drift.resolvedAt!).toLocaleString()}
+                    </span>
+                  </div>
+                  {drift.resolutionNotes && (
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                        Resolution Notes
+                      </span>
+                      <span className="text-slate-600 dark:text-slate-400">
+                        {drift.resolutionNotes}
+                      </span>
+                    </div>
+                  )}
+                  {drift.correctionMethod && (
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                        Correction Method
+                      </span>
+                      <span className="font-semibold text-slate-700 dark:text-slate-300">
+                        {drift.correctionMethod.replace(/_/g, " ")}
+                      </span>
+                    </div>
+                  )}
+                  {drift.compensatingEntryRef && (
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                        Compensating Entry Ref
+                      </span>
+                      <span className="font-mono text-primary text-[11px]">
+                        {drift.compensatingEntryRef}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+
+      {resolveOpen && (
+        <ResolveDriftModal
+          drift={drift}
+          runId={runId}
+          onClose={() => setResolveOpen(false)}
+          onResolved={onResolved}
+        />
+      )}
+    </>
+  );
 };
 
 const AdminReconciliationDetailScreen: React.FC = () => {
-    const { runId } = useParams();
-    const navigate = useNavigate();
-    const { showToast } = useToast();
-    
-    const [report, setReport] = useState(getReportInfo(runId || ''));
-    const [drifts, setDrifts] = useState(mockDrifts[runId || ''] || []);
-    const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  const { runId } = useParams<{ runId: string }>();
+  const navigate = useNavigate();
+  const { showToast } = useToast();
 
-    // API Call Preparation (Commented out for production use later)
-    /*
-    useEffect(() => {
-        const fetchReportDetails = async () => {
-            if (!runId) return;
-            setIsLoadingDetails(true);
-            try {
-                // const response = await fetch(`/admin/reconciliation/reports/${runId}`);
-                // if (!response.ok) throw new Error('Failed to fetch report details');
-                // const data = await response.json();
-                // setReport(data.report);
-                // setDrifts(data.drifts);
-            } catch (error) {
-                console.error("Failed to fetch report details:", error);
-                showToast('error', 'Failed to load report details');
-            } finally {
-                setIsLoadingDetails(false);
-            }
-        };
-        fetchReportDetails();
-    }, [runId]);
-    */
+  const [report, setReport] = useState<ReconReportDetail | null>(null);
+  const [loading, setLoading] = useState(true);
 
-    const [unfreezeModalOpen, setUnfreezeModalOpen] = useState(false);
-    const [selectedDrift, setSelectedDrift] = useState<Drift | null>(null);
-    const [unfreezeReason, setUnfreezeReason] = useState('');
-    const [unfreezeVerify, setUnfreezeVerify] = useState(true);
-    const [isUnfreezing, setIsUnfreezing] = useState(false);
-    const [unfreezeError, setUnfreezeError] = useState<string | null>(null);
+  const fetchReport = useCallback(async () => {
+    if (!runId) return;
+    setLoading(true);
+    try {
+      const data = await reconciliationService.getReportById(runId);
+      setReport(data);
+    } catch (err: any) {
+      showToast("error", "Failed to load reconciliation report");
+    } finally {
+      setLoading(false);
+    }
+  }, [runId]);
 
-    const openUnfreezeModal = (drift: Drift) => {
-        setSelectedDrift(drift);
-        setUnfreezeReason('');
-        setUnfreezeVerify(true);
-        setUnfreezeError(null);
-        setUnfreezeModalOpen(true);
-    };
+  useEffect(() => {
+    fetchReport();
+  }, [fetchReport]);
 
-    const handleUnfreezeSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (unfreezeReason.length < 10 || !selectedDrift) return;
-
-        setIsUnfreezing(true);
-        setUnfreezeError(null);
-
-        // API Call Preparation (Commented out for production use later)
-        /*
-        try {
-            // const response = await fetch(`/admin/wallets/${selectedDrift.ownerPublicId}/unfreeze`, {
-            //     method: 'POST',
-            //     headers: { 'Content-Type': 'application/json' },
-            //     body: JSON.stringify({ 
-            //         reason: unfreezeReason,
-            //         verifyReconciliation: unfreezeVerify 
-            //     })
-            // });
-            //
-            // const result = await response.json();
-            //
-            // if (!response.ok) {
-            //     if (result.error === 'CANNOT_UNFREEZE_DRIFT_STILL_EXISTS') {
-            //         throw new Error("CANNOT_UNFREEZE_DRIFT_STILL_EXISTS: The underlying discrepancy must be resolved before this wallet can be safely unfrozen.");
-            //     } else if (result.error === 'WALLET_NOT_FROZEN') {
-            //         throw new Error("WALLET_NOT_FROZEN: This wallet is already active.");
-            //     }
-            //     throw new Error(result.message || 'Failed to unfreeze wallet');
-            // }
-            // 
-            // setUnfreezeModalOpen(false);
-            // showToast('success', 'Wallet successfully unfrozen');
-            // 
-            // // Optionally refetch drifts here to update the UI
-        } catch (error: any) {
-            console.error("Failed to unfreeze wallet:", error);
-            setUnfreezeError(error.message || "An unexpected error occurred");
-        } finally {
-            setIsUnfreezing(false);
-        }
-        */
-
-        // Simulate API call taking a few seconds (Mock implementation)
-        setTimeout(() => {
-            // Randomly succeed or fail if verify is on
-            if (unfreezeVerify && Math.random() > 0.5) {
-                setIsUnfreezing(false);
-                setUnfreezeError("CANNOT_UNFREEZE_DRIFT_STILL_EXISTS: The underlying discrepancy must be resolved before this wallet can be safely unfrozen.");
-            } else {
-                setIsUnfreezing(false);
-                setUnfreezeModalOpen(false);
-                showToast('success', 'Wallet successfully unfrozen');
-            }
-        }, 2000);
-    };
-
+  if (loading) {
     return (
-        <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in duration-500 pb-20">
-            <button 
-                onClick={() => navigate('/admin/reconciliation')}
-                className="flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-primary transition-colors"
-            >
-                <ArrowLeft className="w-4 h-4" /> Back to Dashboard
-            </button>
-
-            <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
-                <div>
-                    <h2 className="text-3xl font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-3">
-                        Report: {runId}
-                        <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                            report.status === 'COMPLETED' ? 'bg-green-100 text-green-700' :
-                            report.status === 'RUNNING' ? 'bg-blue-100 text-blue-700 animate-pulse' :
-                            'bg-red-100 text-red-700'
-                        }`}>
-                            {report.status}
-                        </span>
-                    </h2>
-                    <p className="text-slate-500 font-medium flex items-center gap-2 mt-2" title={new Date(report.startedAt).toLocaleString()}>
-                        <Clock className="w-4 h-4" /> Run {formatRelativeTime(report.startedAt)} via {report.triggeredBy}
-                    </p>
-                </div>
-            </div>
-
-            {report.status === 'FAILED' && report.errorMessage && (
-                <div className="p-6 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30 rounded-3xl flex items-start gap-4">
-                    <ServerCrash className="w-6 h-6 text-red-600 mt-1" />
-                    <div>
-                        <h4 className="font-bold text-red-900 dark:text-red-400">Reconciliation Failed</h4>
-                        <p className="text-red-700 dark:text-red-300 text-sm mt-1">{report.errorMessage}</p>
-                    </div>
-                </div>
-            )}
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl">
-                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Accounts Checked</p>
-                    <p className="text-3xl font-black text-slate-900 dark:text-white">{report.accountsChecked.toLocaleString()}</p>
-                </div>
-                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl">
-                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Duration</p>
-                    <p className="text-3xl font-black text-slate-900 dark:text-white">{report.durationMs > 0 ? (report.durationMs / 1000).toFixed(1) + 's' : '-'}</p>
-                </div>
-                <div className={`border p-6 rounded-3xl md:col-span-2 flex items-center justify-between ${report.driftsFound > 0 ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-900/50' : 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-900/50'}`}>
-                    <div>
-                        <p className={`text-xs font-black uppercase tracking-widest mb-2 ${report.driftsFound > 0 ? 'text-red-500' : 'text-green-600'}`}>Drifts Detected</p>
-                        <p className={`text-4xl font-black ${report.driftsFound > 0 ? 'text-red-600 dark:text-red-400' : 'text-green-700 dark:text-green-400'}`}>
-                            {report.driftsFound}
-                        </p>
-                    </div>
-                    {report.driftsFound > 0 ? <AlertTriangle className="w-12 h-12 text-red-500 opacity-20" /> : <CheckCircle2 className="w-12 h-12 text-green-500 opacity-20" />}
-                </div>
-            </div>
-
-            {report.status === 'COMPLETED' && report.driftsFound > 0 && (
-                <div className="space-y-4">
-                    <h3 className="text-xl font-black mb-4 flex items-center gap-2">
-                        <Search className="w-5 h-5 text-slate-400" /> Drift Analysis Details
-                    </h3>
-                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl overflow-hidden shadow-sm">
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left border-collapse">
-                                <thead>
-                                    <tr className="bg-slate-50 dark:bg-slate-800/50 text-xs uppercase tracking-widest text-slate-400 font-black border-b border-slate-100 dark:border-slate-800">
-                                        <th className="px-6 py-4">Account ID</th>
-                                        <th className="px-6 py-4">Owner</th>
-                                        <th className="px-6 py-4 text-right">Cached Bal</th>
-                                        <th className="px-6 py-4 text-right">True Bal</th>
-                                        <th className="px-6 py-4 text-right">Drift</th>
-                                        <th className="px-6 py-4">Severity & Action</th>
-                                        <th className="px-6 py-4"></th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50 text-sm">
-                                    {drifts.map((d, i) => (
-                                        <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                                            <td className="px-6 py-4 font-mono text-xs font-bold text-slate-600 dark:text-slate-300">
-                                                {d.ledgerAccountPublicId}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <div className="flex items-center gap-2">
-                                                    <OwnerIcon type={d.ownerType} />
-                                                    <span className="font-bold text-slate-900 dark:text-white capitalize">{d.ownerType.toLowerCase()}</span>
-                                                </div>
-                                                <div className="text-[10px] text-slate-500 mt-1 tracking-wider">{d.ownerPublicId}</div>
-                                            </td>
-                                            <td className="px-6 py-4 text-right font-medium text-slate-600 dark:text-slate-400">
-                                                {formatCurrency(d.cachedBalance)}
-                                            </td>
-                                            <td className="px-6 py-4 text-right font-medium text-slate-900 dark:text-white">
-                                                {formatCurrency(d.trueBalance)}
-                                            </td>
-                                            <td className="px-6 py-4 text-right">
-                                                <span className={`font-black ${d.severity === 'OVERSTATED' ? 'text-red-500' : 'text-yellow-600 dark:text-yellow-500'}`}>
-                                                    {d.drift > 0 ? '+' : ''}{formatCurrency(d.drift)}
-                                                </span>
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <div className="flex flex-col gap-1.5 items-start">
-                                                    <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-black tracking-widest uppercase ${
-                                                        d.severity === 'OVERSTATED' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                                                    }`}>
-                                                        {d.severity}
-                                                    </span>
-                                                    <span className="text-[9px] font-bold text-slate-400 tracking-wider">
-                                                        ACTION: {d.action.replace(/_/g, ' ')}
-                                                    </span>
-                                                </div>
-                                                {d.notes && (
-                                                    <p className="text-xs text-slate-500 mt-2 italic flex items-center gap-1">
-                                                        <AlertCircle className="w-3 h-3" /> {d.notes}
-                                                    </p>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4 text-right">
-                                                <div className="flex flex-col gap-2 items-end">
-                                                    <button onClick={() => navigate(`/admin/wallet-funding`)} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-900 dark:text-white rounded-xl font-bold text-xs transition-colors whitespace-nowrap">
-                                                        Investigate Wallet
-                                                    </button>
-                                                    {d.action === 'ALERT_AND_FREEZE' && (
-                                                        <button 
-                                                            onClick={() => openUnfreezeModal(d)}
-                                                            className="flex items-center gap-1.5 px-4 py-2 bg-purple-50 hover:bg-purple-100 dark:bg-purple-900/10 dark:hover:bg-purple-900/30 text-purple-700 dark:text-purple-400 rounded-xl font-bold text-xs transition-colors whitespace-nowrap"
-                                                        >
-                                                            <Unlock className="w-3 h-3" /> Unfreeze Wallet
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            )}
-            
-            {report.status === 'COMPLETED' && report.driftsFound === 0 && (
-                <div className="p-12 border border-dashed border-slate-300 dark:border-slate-800 rounded-3xl text-center">
-                    <div className="w-16 h-16 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <CheckCircle2 className="w-8 h-8 text-green-600" />
-                    </div>
-                    <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">Systems in Sync</h3>
-                    <p className="text-slate-500">No discrepancies detected during this run.</p>
-                </div>
-            )}
-
-            {unfreezeModalOpen && selectedDrift && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden">
-                        <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 bg-purple-100 dark:bg-purple-900/30 text-purple-600 rounded-xl flex items-center justify-center">
-                                    <Unlock className="w-5 h-5" />
-                                </div>
-                                <div>
-                                    <h3 className="font-bold text-slate-900 dark:text-white">Unfreeze Wallet</h3>
-                                    <p className="text-xs text-slate-500 font-mono mt-0.5">{selectedDrift.ledgerAccountPublicId}</p>
-                                </div>
-                            </div>
-                            <button onClick={() => setUnfreezeModalOpen(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-                        
-                        <form onSubmit={handleUnfreezeSubmit} className="p-6 space-y-6">
-                            <div className="p-4 bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-900/50 rounded-2xl flex items-start gap-3">
-                                <AlertTriangle className="w-5 h-5 text-yellow-600 shrink-0 mt-0.5" />
-                                <p className="text-sm text-yellow-800 dark:text-yellow-500/90 font-medium">
-                                    This will restore wallet to ACTIVE status. A reconciliation check will run first to verify the drift of <strong>{formatCurrency(selectedDrift.drift)}</strong> is resolved.
-                                </p>
-                            </div>
-
-                            {unfreezeError && (
-                                <div className="p-4 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/50 rounded-2xl flex items-start gap-3 animate-in fade-in slide-in-from-top-2">
-                                    <ServerCrash className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-                                    <p className="text-sm text-red-800 dark:text-red-400 font-medium">
-                                        {unfreezeError}
-                                    </p>
-                                </div>
-                            )}
-
-                            <div>
-                                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">
-                                    Reason for Unfreezing <span className="text-red-500">*</span>
-                                </label>
-                                <textarea 
-                                    className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl text-sm font-medium focus:ring-2 focus:ring-primary outline-none p-4 resize-none placeholder:text-slate-400 text-slate-900 dark:text-white"
-                                    rows={4}
-                                    placeholder="Explain why this wallet is safe to unfreeze..."
-                                    value={unfreezeReason}
-                                    onChange={e => setUnfreezeReason(e.target.value)}
-                                    minLength={10}
-                                    maxLength={500}
-                                    required
-                                />
-                                <div className="flex justify-between items-center mt-1.5 px-1">
-                                    <p className="text-xs text-slate-500">Provide required context for audit logs.</p>
-                                    <p className={`text-xs font-medium ${unfreezeReason.length < 10 ? 'text-red-500' : 'text-green-600'}`}>{unfreezeReason.length} / 500</p>
-                                </div>
-                            </div>
-
-                            <label className="flex items-center gap-3 p-4 border border-slate-200 dark:border-slate-800 rounded-2xl cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                                <input 
-                                    type="checkbox" 
-                                    checked={!unfreezeVerify}
-                                    onChange={(e) => setUnfreezeVerify(!e.target.checked)}
-                                    className="w-5 h-5 text-red-500 rounded border-slate-300 dark:border-slate-600 focus:ring-red-500 dark:bg-slate-700"
-                                />
-                                <div>
-                                    <span className="text-sm font-bold block text-slate-900 dark:text-white">Skip reconciliation verification</span>
-                                    <span className="text-xs text-slate-500">DANGEROUS: Force unfreeze without checking if drift still exists</span>
-                                </div>
-                            </label>
-
-                            <div className="flex justify-end gap-3 pt-2">
-                                <button 
-                                    type="button" 
-                                    onClick={() => setUnfreezeModalOpen(false)}
-                                    className="px-6 py-3 font-bold text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors"
-                                >
-                                    Cancel
-                                </button>
-                                <button 
-                                    type="submit" 
-                                    disabled={isUnfreezing || unfreezeReason.length < 10}
-                                    className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-sm transition-colors shadow-lg shadow-purple-600/30 flex items-center gap-2 group disabled:opacity-50 disabled:pointer-events-none"
-                                >
-                                    {isUnfreezing ? <Activity className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4 group-hover:-translate-y-0.5 transition-transform" />}
-                                    {isUnfreezing ? 'Processing...' : 'Unfreeze Wallet'}
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
-        </div>
+      <div className="py-24 flex flex-col items-center justify-center gap-3 text-slate-400">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="text-xs font-semibold">
+          Loading reconciliation report...
+        </p>
+      </div>
     );
+  }
+
+  if (!report) {
+    return (
+      <div className="max-w-xl mx-auto py-16 text-center space-y-4">
+        <ServerCrash className="w-12 h-12 mx-auto text-slate-300 dark:text-slate-600" />
+        <h2 className="text-lg font-bold text-slate-900 dark:text-white">
+          Report Not Found
+        </h2>
+        <p className="text-xs text-slate-500">
+          The requested run ID "{runId}" does not exist.
+        </p>
+        <button
+          onClick={() => navigate("/admin/reconciliation")}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to Reconciliation
+        </button>
+      </div>
+    );
+  }
+
+  const openDrifts = report.drifts.filter((d) => !d.resolvedAt);
+  const resolvedDrifts = report.drifts.filter((d) => !!d.resolvedAt);
+
+  return (
+    <div className="w-full max-w-7xl mx-auto space-y-6 pb-16 animate-in fade-in duration-200">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => navigate("/admin/reconciliation")}
+          className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 transition-colors shadow-sm"
+        >
+          <ArrowLeft className="w-4 h-4" />
+        </button>
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold font-mono text-slate-900 dark:text-white">
+              {report.runId}
+            </h1>
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold ${
+                report.status === "COMPLETED"
+                  ? "bg-green-100 text-green-700 dark:bg-green-900/30"
+                  : report.status === "RUNNING"
+                    ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 animate-pulse"
+                    : "bg-red-100 text-red-700 dark:bg-red-900/30"
+              }`}
+            >
+              {report.status === "COMPLETED" && (
+                <CheckCircle2 className="w-3 h-3" />
+              )}
+              {report.status === "RUNNING" && <Activity className="w-3 h-3" />}
+              {report.status === "FAILED" && (
+                <ServerCrash className="w-3 h-3" />
+              )}
+              {report.status}
+            </span>
+            <span className="text-[11px] font-semibold text-slate-500 uppercase">
+              {report.triggeredBy}
+            </span>
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            Started {new Date(report.startedAt).toLocaleString()}
+            {report.finishedAt &&
+              ` · Finished ${new Date(report.finishedAt).toLocaleString()}`}
+            {report.durationMs &&
+              ` · ${(report.durationMs / 1000).toFixed(1)}s`}
+          </p>
+        </div>
+      </div>
+
+      {/* Failed banner */}
+      {report.status === "FAILED" && report.errorMessage && (
+        <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 flex items-start gap-3">
+          <ServerCrash className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs font-bold text-red-800 dark:text-red-300 uppercase tracking-wide">
+              Run Failed
+            </p>
+            <p className="text-xs text-red-700 dark:text-red-200 mt-0.5">
+              {report.errorMessage}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Accounts Checked
+          </span>
+          <p className="text-2xl font-bold font-mono text-slate-900 dark:text-white mt-1">
+            {report.accountsChecked.toLocaleString()}
+          </p>
+        </div>
+        <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Drifts Found
+          </span>
+          <p
+            className={`text-2xl font-bold font-mono mt-1 ${report.driftsFound > 0 ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}
+          >
+            {report.driftsFound}
+          </p>
+        </div>
+        <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Open Drifts
+          </span>
+          <p
+            className={`text-2xl font-bold font-mono mt-1 ${openDrifts.length > 0 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}
+          >
+            {openDrifts.length}
+          </p>
+        </div>
+        <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Resolved
+          </span>
+          <p className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-1">
+            {resolvedDrifts.length}
+          </p>
+        </div>
+      </div>
+
+      {/* Drifts Table */}
+      {report.drifts.length === 0 ? (
+        <div className="py-16 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <CheckCircle2 className="w-10 h-10 mx-auto text-emerald-400 mb-3" />
+          <p className="text-sm font-bold text-slate-900 dark:text-white">
+            All accounts in sync
+          </p>
+          <p className="text-xs text-slate-500 mt-1">
+            No ledger drifts detected in this run.
+          </p>
+        </div>
+      ) : (
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-500" />
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                Drift Records
+              </h2>
+              <span className="text-[11px] text-slate-400">
+                {openDrifts.length} open · {resolvedDrifts.length} resolved
+              </span>
+            </div>
+            {openDrifts.length > 0 && (
+              <div className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 font-semibold">
+                <Info className="w-3.5 h-3.5" />
+                Click a row to expand · Resolve to close
+              </div>
+            )}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-800/50 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800">
+                  <th className="px-4 py-3">Ledger Account</th>
+                  <th className="px-4 py-3">Owner Type</th>
+                  <th className="px-4 py-3">Severity</th>
+                  <th className="px-4 py-3">Action Taken</th>
+                  <th className="px-4 py-3">Cached Balance</th>
+                  <th className="px-4 py-3">True Balance</th>
+                  <th className="px-4 py-3">Drift</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.drifts.map((drift, i) => (
+                  <DriftRow
+                    key={`${drift.ledgerAccountPublicId}-${i}`}
+                    drift={drift}
+                    runId={report.runId}
+                    onResolved={fetchReport}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };
 
 export default AdminReconciliationDetailScreen;

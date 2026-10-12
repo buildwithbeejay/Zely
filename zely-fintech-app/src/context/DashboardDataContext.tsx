@@ -4,6 +4,7 @@ import { transactionService } from "../services/transactionService";
 import { queryKeys } from "@/utils/queryKey";
 import { ApiWallet, ApiTransaction } from "../utils/types";
 import { useSocket } from "@/context/SocketContext";
+import { getFriendlyError } from "@/utils/friendlyError";
 
 interface DashboardDataContextType {
   wallets: ApiWallet[] | undefined;
@@ -11,6 +12,9 @@ interface DashboardDataContextType {
   transactions: ApiTransaction[];
   loadingTransactions: boolean;
   errorTransactions: string | null;
+  errorTransactionsTitle: string | null;
+  errorWallets: string | null;
+  errorWalletsTitle: string | null;
   refreshWallets: () => void;
   refreshTransactions: () => void;
 }
@@ -53,6 +57,7 @@ export const DashboardDataProvider = ({
     data: transactionsResponse,
     isLoading: loadingTransactions,
     error: transactionsError,
+    error: walletsError,
   } = useQuery({
     queryKey: queryKeys.transactions({ limit: 20, page: 1 }),
     queryFn: () => transactionService.getAll({ limit: 20, page: 1 }),
@@ -82,7 +87,19 @@ export const DashboardDataProvider = ({
         loadingWallets,
         transactions,
         loadingTransactions,
-        errorTransactions: transactionsError ? String(transactionsError) : null,
+        errorTransactions: transactionsError
+          ? getFriendlyError(transactionsError).message
+          : null,
+        errorTransactionsTitle: transactionsError
+          ? getFriendlyError(transactionsError).title
+          : null,
+        errorWallets: walletsError
+          ? getFriendlyError(walletsError).message
+          : null,
+        errorWalletsTitle: walletsError
+          ? getFriendlyError(walletsError).title
+          : null,
+
         refreshWallets,
         refreshTransactions,
       }}

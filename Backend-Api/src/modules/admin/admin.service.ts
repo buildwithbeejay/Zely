@@ -1,10 +1,16 @@
-// admin.user.service.ts
 import User from "@/modules/auth/authmodel";
 import { accountStatus, UserRole } from "@/modules/auth/authinterface";
 import { KycTier } from "@/modules/transactionLimit/transaction.limit.model";
 import { NotFoundError } from "@/shared/errors/notFoundError";
 import userService from "@/modules/users/user.service";
 import { UserTransactionModel } from "@/kafka/projections/models/projectionModels";
+import { LedgerTransactionModel } from "@/modules/ledger/ledger.transaction.model";
+import { KycSubmission, KycSubmissionStatus } from "@/modules/kyc/kyc.model";
+import {
+  ReversalModel,
+  ReversalStatus,
+} from "@/modules/reversal /reversal.model";
+import { Account } from "@/modules/account/account.model";
 
 const SORT_MAP: Record<string, string> = {
   name: "name",
@@ -65,6 +71,20 @@ class AdminUserService {
       User.countDocuments(filter),
     ]);
 
+    //Batch fetch their account as well
+    // const userIds = docs.map((u: any) => u.userId);
+    // const accounts = await Account.find({
+    //   userId: { $in: userIds },
+    //   type: "MAIN_CHECKINGS",
+    //   currency: "NGN",
+    // })
+    //   .select("userId accountNumber")
+    //   .lean();
+
+    // const accountMap = new Map(
+    //   accounts.map((a: any) => [a.userId, a.accountNumber]),
+    // );
+
     const now = new Date();
     return {
       users: docs.map((u: any) => ({
@@ -80,6 +100,7 @@ class AdminUserService {
         mfaEnabled: u.mfaEnabled,
         isLocked: !!u.security?.lockedUntil && u.security.lockedUntil > now,
         joinedDate: u.createdAt,
+        // accountNumber: accountMap.get(u.userId) ?? null,
       })),
       total,
       page,
@@ -146,6 +167,7 @@ class AdminUserService {
     page?: number | string;
     limit?: number | string;
     sort?: string;
+    category?: string;
     order?: string;
   }) => {
     const page = Math.max(1, Number(query.page) || 1);
@@ -158,7 +180,7 @@ class AdminUserService {
     if (query.direction) filter.direction = query.direction;
     if (query.walletType) filter.walletType = query.walletType;
     if (query.status) filter.status = query.status;
-
+    if (query.category) filter.category = query.category;
     if (query.dateFrom || query.dateTo) {
       filter.occurredAt = {};
       if (query.dateFrom) filter.occurredAt.$gte = new Date(query.dateFrom);
@@ -207,6 +229,27 @@ class AdminUserService {
       .lean();
     const userMap = new Map(users.map((u: any) => [u.userId, u]));
 
+    const transactionRefs = docs
+      .map((t: any) => t.transactionRef)
+      .filter(Boolean);
+
+    const reversals = await ReversalModel.find({
+      $or: [
+        { originalTransactionRef: { $in: transactionRefs } },
+        { reversalTransactionRef: { $in: transactionRefs } },
+      ],
+      status: ReversalStatus.COMPLETED,
+    })
+      .select("reversalId originalTransactionRef reversalTransactionRef")
+      .lean();
+
+    const reversedMap = new Map(
+      reversals.map((r) => [r.originalTransactionRef, r.reversalId]),
+    );
+    const reversalMap = new Map(
+      reversals.map((r) => [r.reversalTransactionRef, r.reversalId]),
+    );
+
     return {
       transactions: docs.map((t: any) => ({
         transactionId: t.transactionRef ?? t.eventId,
@@ -228,6 +271,11 @@ class AdminUserService {
         fee: t.fee,
         penaltyReason: t.penaltyReason,
         occurredAt: t.occurredAt,
+        isReversed: reversedMap.has(t.transactionRef),
+        reversalId:
+          reversedMap.get(t.transactionRef) ??
+          reversalMap.get(t.transactionRef) ??
+          null,
       })),
       total,
       page,
@@ -272,6 +320,63 @@ class AdminUserService {
       raw: t, // keep everything else visible for an admin debugging a specific transaction
       action: t.action,
       counterpartyUserId: t.counterpartyUserId ?? null,
+    };
+  };
+
+  public getDashboardStats = async () => {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const [
+      totalUsers,
+      previousUsers,
+      pendingKyc,
+      currentVolumeResult,
+      previousVolumeResult,
+    ] = await Promise.all([
+      User.countDocuments({ role: { $ne: UserRole.SYSTEM } }),
+      User.countDocuments({
+        role: { $ne: UserRole.SYSTEM },
+        createdAt: { $lt: thirtyDaysAgo },
+      }),
+      // User.countDocuments({ kycTier: KycTier.TIER_1 }),
+
+      KycSubmission.countDocuments({
+        status: KycSubmissionStatus.PENDING_REVIEW,
+      }),
+
+      // userKyc.countDocuments({ status: KycSubmissionStatus.PENDING_REVIEW })
+
+      LedgerTransactionModel.aggregate([
+        { $match: { status: "POSTED" } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      LedgerTransactionModel.aggregate([
+        {
+          $match: {
+            status: "POSTED",
+            createdAt: { $lt: thirtyDaysAgo },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+    ]);
+
+    const totalVolume = currentVolumeResult[0]?.total ?? 0;
+    const prevVolume = previousVolumeResult[0]?.total ?? 0;
+
+    const calcTrend = (current: number, previous: number): string => {
+      if (previous === 0) return "+100%";
+      const pct = (((current - previous) / previous) * 100).toFixed(1);
+      return pct.startsWith("-") ? `${pct}%` : `+${pct}%`;
+    };
+
+    return {
+      totalUsers,
+      pendingKyc,
+      totalVolume,
+      userGrowthTrend: calcTrend(totalUsers, previousUsers),
+      volumeTrend: calcTrend(totalVolume, prevVolume),
+      systemHealthPercent: 99.9,
     };
   };
 }

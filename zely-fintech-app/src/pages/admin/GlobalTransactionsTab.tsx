@@ -17,7 +17,13 @@ import {
   adminTransactionService,
 } from "@/services/admin.service";
 
-const STATUS_OPTIONS: string[] = []; // fill with your real status enum values — see note below
+const STATUS_OPTIONS = [
+  { value: "TRANSACTION_COMPLETED", label: "Completed" },
+  { value: "PENDING", label: "Pending" },
+  { value: "FAILED", label: "Failed" },
+  { value: "CANCELLED", label: "Cancelled" },
+];
+
 const DIRECTION_OPTIONS = ["credit", "debit"];
 const WALLET_OPTIONS = ["MAIN_CHECKINGS", "SAVINGS", "VAULT"];
 
@@ -60,6 +66,7 @@ function GlobalTransactionsPanel() {
   const [status, setStatus] = useState("");
   const [direction, setDirection] = useState("");
   const [walletType, setWalletType] = useState("");
+  const [category, setCategory] = useState("");
   const [sort, setSort] = useState<{ key: string; order: "asc" | "desc" }>({
     key: "occurredAt",
     order: "desc",
@@ -72,9 +79,11 @@ function GlobalTransactionsPanel() {
   const [error, setError] = useState<string | null>(null);
 
   const navigate = useNavigate(); // call the hook, get back a function
-  const { userId } = useParams<{ userId?: string }>();
 
-  useEffect(() => setPage(1), [search, status, direction, walletType]);
+  useEffect(
+    () => setPage(1),
+    [search, status, direction, walletType, category],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -88,6 +97,7 @@ function GlobalTransactionsPanel() {
           status,
           direction,
           walletType,
+          category,
           page,
           limit: 20,
           sort: sort.key === "amount" ? "amount" : "occurredAt",
@@ -108,7 +118,16 @@ function GlobalTransactionsPanel() {
       });
 
     return () => controller.abort();
-  }, [search, status, direction, walletType, page, sort.key, sort.order]);
+  }, [
+    search,
+    status,
+    direction,
+    walletType,
+    category,
+    page,
+    sort.key,
+    sort.order,
+  ]);
 
   const toggleSort = (key: string) => {
     if (key !== "amount" && key !== "date") return; // only these two are server-sortable right now
@@ -154,8 +173,8 @@ function GlobalTransactionsPanel() {
           >
             <option value="">All statuses</option>
             {STATUS_OPTIONS.map((s) => (
-              <option key={s} value={s}>
-                {s}
+              <option key={s.value} value={s.value}>
+                {s.label}
               </option>
             ))}
           </select>
@@ -184,6 +203,20 @@ function GlobalTransactionsPanel() {
                 {w.replace(/_/g, " ")}
               </option>
             ))}
+          </select>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className={selectCls}
+            aria-label="Filter by category"
+          >
+            <option value="">All categories</option>
+            <option value="REVERSAL">Reversal</option>
+            <option value="P2P_TRANSFER">P2P Transfer</option>
+            <option value="EXTERNAL_FUNDING">External Funding</option>
+            <option value="INTERNAL_TRANSFER">Internal Transfer</option>
+            <option value="VAULT_DEPOSIT">Vault Deposit</option>
+            <option value="VAULT_WITHDRAWAL">Vault Withdrawal</option>
           </select>
         </div>
       </div>
@@ -247,7 +280,12 @@ function GlobalTransactionsPanel() {
               transactions.map((tx) => (
                 <tr
                   key={tx.transactionId}
-                  className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+                  onClick={() => {
+                    if (tx.reversalId) {
+                      navigate(`/admin/reversals/${tx.reversalId}`);
+                    }
+                  }}
+                  className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${tx.reversalId ? "cursor-pointer" : ""}`}
                 >
                   <td className="px-6 py-4 font-mono text-xs text-slate-500">
                     {tx.transactionId}
@@ -261,13 +299,23 @@ function GlobalTransactionsPanel() {
                     </button>
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       {tx.direction === "credit" ? (
                         <ArrowDownLeft className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                       ) : (
                         <ArrowUpRight className="w-3.5 h-3.5 text-red-500 shrink-0" />
                       )}
                       <span className="text-xs">{describeTransaction(tx)}</span>
+                      {tx.isReversed && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
+                          REVERSED
+                        </span>
+                      )}
+                      {tx.category === "REVERSAL" && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                          REVERSAL
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td

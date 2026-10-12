@@ -37,6 +37,8 @@ import {
   PAYMENT_RETRY_LEVELS,
   PIN_MAX_RETRIES,
   PIN_RETRY_LEVELS,
+  REVERSAL_MAX_RETRIES,
+  REVERSAL_RETRY_LEVELS,
   TRANSFER_MAX_RETRIES,
   TRANSFER_RETRY_LEVELS,
   VAULT_MAX_RETRIES,
@@ -44,6 +46,8 @@ import {
 } from "../retry.helpers/retry.policy";
 import { validateWithSchema } from "../schema/zod.helper";
 import { pinProcessor } from "@/events/pinProcessor.evt";
+import { markProvisioningFailedForEvent } from "@/kafka/retry.helpers/provisionin.helper";
+import { processReversalEvent } from "@/events/reversalProcessor.evt";
 
 // retry.ready.ts
 let markReady: () => void;
@@ -127,6 +131,14 @@ const PROCESSOR_REGISTRY: Record<ProcessorType, ProcessorConfig> = {
       await onEventConfirmed(envelope, envelope.meta.originalTopic);
     },
   },
+  reversal: {
+    processor: processReversalEvent,
+    retryLevels: REVERSAL_RETRY_LEVELS,
+    maxRetries: REVERSAL_MAX_RETRIES,
+    onSuccess: async (_result: any, envelope: RetryEnvelope) => {
+      await onEventConfirmed(envelope, envelope.meta.originalTopic);
+    },
+  },
 };
 
 const RETRY_CONSUMER_GROUP = "retry-consumer";
@@ -139,6 +151,7 @@ const ALL_RETRY_TOPICS = [
   ...PAYMENT_RETRY_LEVELS.map((l) => l.topic),
   ...FUNDING_RETRY_LEVELS.map((l) => l.topic),
   ...PIN_RETRY_LEVELS.map((l) => l.topic),
+  ...REVERSAL_RETRY_LEVELS.map((l) => l.topic),
 ];
 
 export async function runRetryConsumer() {
@@ -222,6 +235,7 @@ export async function runRetryConsumer() {
          * CHECK RETRY EXHAUSTION
          * ------------------------- */
         if (nextRetryCount >= maxRetries) {
+          await markProvisioningFailedForEvent(envelope.event); // ← mark provisioning failed before sending to DLQ
           await sendToDLQ(
             originalTopic,
             envelope,
@@ -247,6 +261,7 @@ export async function runRetryConsumer() {
          * ------------------------- */
         const retryConfig = retryLevels[nextRetryCount] ?? null;
         if (!retryConfig) {
+          await markProvisioningFailedForEvent(envelope.event);
           await sendToDLQ(
             originalTopic,
             envelope,
@@ -353,6 +368,7 @@ export async function runRetryConsumer() {
           timer();
 
           if (nextRetryCount >= maxRetries) {
+            await markProvisioningFailedForEvent(envelope.event);
             await sendToDLQ(originalTopic, envelope, error);
             logger.error("Max retries reached, sent to DLQ", {
               eventId: envelope.event.eventId,

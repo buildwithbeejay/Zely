@@ -18,6 +18,7 @@ import PinController from "@/modules/pin/pin.controller";
 import ReversalController from "@/modules/reversal /reversal.controller";
 import AdminUserController from "@/modules/admin/admin.controller";
 import AdminAuditController from "@/modules/admin/admin.audit.controller";
+import FeeAdminController from "@/modules/fee/fee.admin.controller";
 
 let isReady = false;
 
@@ -40,6 +41,7 @@ const app = new App(
     new ReversalController(),
     new AdminUserController(),
     new AdminAuditController(),
+    new FeeAdminController(),
   ],
   Number(config.app.port),
 );

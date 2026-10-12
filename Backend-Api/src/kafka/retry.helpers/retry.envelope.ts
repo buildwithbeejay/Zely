@@ -6,7 +6,8 @@ export type ProcessorType =
   | "payment"
   | "funding"
   | "vault"
-  | "pin";
+  | "pin"
+  | "reversal";
 
 export interface RetryEnvelopeMeta {
   retryCount: number;
