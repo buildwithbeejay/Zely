@@ -32,6 +32,10 @@ import {
   ReconciliationReport,
   ReconciliationStatus,
 } from "./reconciliation.model";
+import {
+  ReversalModel,
+  ReversalStatus,
+} from "@/modules/reversal /reversal.model";
 
 const BATCH_SIZE = 100;
 
@@ -43,7 +47,7 @@ class ReconciliationService {
     options: { freezeOnDrift?: boolean; triggeredByUserId?: string } = {},
   ) {
     const ledgerAccount = await LedgerAccount.findById(ledgerAccountId).lean();
-    if (!ledgerAccount) throw new Error("ledger account not found");
+    if (!ledgerAccount) throw new BadRequestError("ledger account not found");
 
     const report = await ReconciliationReport.create({
       status: ReconciliationStatus.RUNNING,
@@ -645,6 +649,40 @@ class ReconciliationService {
       trueBalance,
       adminPublicId,
     });
+  }
+
+  // Service
+  public async getSummary() {
+    const [
+      lastReport,
+      negativeBalanceCount,
+      frozenWalletCount,
+      failedReversalCount,
+      openDriftCount,
+    ] = await Promise.all([
+      ReconciliationReport.findOne({ status: ReconciliationStatus.COMPLETED })
+        .sort({ createdAt: -1 })
+        .select(
+          "runId status driftsFound accountsChecked finishedAt triggeredBy",
+        )
+        .lean(),
+      Wallet.countDocuments({ availableBalance: { $lt: 0 } }),
+      Wallet.countDocuments({ status: WalletStatus.FROZEN }),
+      ReversalModel.countDocuments({ status: ReversalStatus.FAILED }),
+      ReconciliationReport.countDocuments({
+        status: ReconciliationStatus.COMPLETED,
+        driftsFound: { $gt: 0 },
+        "drifts.resolvedAt": { $exists: false },
+      }),
+    ]);
+
+    return {
+      lastRun: lastReport,
+      negativeBalanceCount,
+      frozenWalletCount,
+      failedReversalCount,
+      openDriftCount,
+    };
   }
 }
 export default ReconciliationService;

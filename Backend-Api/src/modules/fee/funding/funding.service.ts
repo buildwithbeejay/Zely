@@ -16,6 +16,7 @@ import {
 import { AuditAction, AuditStatus } from "@/modules/audit/audit.interface";
 import { LedgerTransactionModel } from "@/modules/ledger/ledger.transaction.model";
 import TransactionBuilder from "@/modules/ledger/ledger.transaction.builder";
+import { checkAndAutoRecoverWallet } from "@/modules/wallet/wallet.recovery";
 
 export enum FundingSource {
   PAYSTACK_WEBHOOK = "PAYSTACK_WEBHOOK",
@@ -101,7 +102,7 @@ class FundingService {
     if (targetWallet.currency !== currency)
       throw new BadRequestError("CURRENCY_MISMATCH");
 
-    if (targetWallet.status !== "ACTIVE") {
+    if (targetWallet.status !== "ACTIVE" && targetWallet.status !== "FROZEN") {
       throw new BadRequestError(
         `TARGET_WALLET_NOT_ACTIVE_${targetWallet.status}`,
       );
@@ -160,6 +161,14 @@ class FundingService {
         throw new BadRequestError("WALLET_VERSION_CONFLICT_RETRY");
       }
 
+      await checkAndAutoRecoverWallet({
+        userPublicId: targetWallet.userPublicId,
+        walletId: targetWallet.walletId,
+        newBalance: updatedWallet.availableBalance,
+        currentStatus: targetWallet.status,
+        freezeReason: targetWallet.freezeReason,
+        session,
+      });
       // Emit funding event
       await emitOutboxEvent(
         {

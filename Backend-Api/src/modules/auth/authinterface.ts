@@ -14,8 +14,9 @@ export enum accountStatus {
   ACCOUNT_READY = "ACCOUNT_READY",
   ACCOUNT_CLOSED = "ACCOUNT_CLOSED",
   ACTIVE = "ACTIVE",
-  SUSPENDED = "SUSPENDED", // ← add
-  LOCKED = "LOCKED", // ← add
+  SUSPENDED = "SUSPENDED",
+  LOCKED = "LOCKED",
+  PROVISIONING_RETRYING = "PROVISIONING_RETRYING",
 }
 
 export interface ISecurityState {
@@ -44,9 +45,10 @@ export interface IUserDocument {
   security: ISecurityState;
   passwordChangedAt?: Date | null;
   passwordResetCount?: number;
-  lastProvisioningRetryAt?: Date;
   lastPasswordResetAt?: Date | null;
   passwordHistory?: string[];
+  provisioningRetryCount: number;
+  lastProvisioningRetryAt: Date | null;
   transactionPin: {
     hash: string | null;
     setAt: Date | null;

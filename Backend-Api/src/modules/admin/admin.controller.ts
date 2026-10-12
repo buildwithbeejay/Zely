@@ -1,9 +1,9 @@
 import { IAuthRequest } from "@/config/interfaces/request.interface";
+import AdminUserService from "@/modules/admin/admin.service";
 import BadRequestError from "@/shared/errors/badRequest";
 import asyncWrapper from "@/shared/middleware/async.wrapper";
 import { isAdmin, requireAuth } from "@/shared/middleware/auth.middleware";
 import { Response, Router } from "express";
-import AdminUserService from "@/modules/admin/admin.service";
 
 class AdminUserController {
   public path = "/admin/users";
@@ -25,6 +25,11 @@ class AdminUserController {
       this.getUserDetail,
     );
 
+    this.route.get("/test", (req, res) => res.json({ ok: true }));
+    this.route.get("/admin/users/test2", (req, res) =>
+      res.json({ ok: true, path: "admin/users/test2" }),
+    );
+
     // Transactions — separate path
     this.route.get(
       this.transactionsPath,
@@ -37,6 +42,15 @@ class AdminUserController {
       requireAuth,
       isAdmin,
       this.getDetail,
+    );
+    this.route.get("/admin/users/test2", (req, res) =>
+      res.json({ ok: true, path: "admin/users/test2" }),
+    );
+    this.route.get(
+      "/admin/dashboard/stats",
+      requireAuth,
+      isAdmin,
+      this.getDashboardStats,
     );
   }
 
@@ -84,6 +98,7 @@ class AdminUserController {
         limit,
         sort,
         order,
+        category,
       } = req.query;
 
       const result = await this.adminUserService.listTransactions({
@@ -95,6 +110,7 @@ class AdminUserController {
         dateFrom: dateFrom as string,
         dateTo: dateTo as string,
         page: page as string,
+        category: category as string,
         limit: limit as string,
         sort: sort as string,
         order: order as string,
@@ -112,6 +128,13 @@ class AdminUserController {
       await this.adminUserService.getTransactionDetail(transactionId);
     res.status(200).json({ ok: true, data: result });
   });
+
+  private getDashboardStats = asyncWrapper(
+    async (req: IAuthRequest, res: Response): Promise<Response | void> => {
+      const result = await this.adminUserService.getDashboardStats();
+      res.status(200).json({ ok: true, data: result });
+    },
+  );
 }
 
 export default AdminUserController;

@@ -4,6 +4,9 @@ import { sendToRetry } from "../producer/retry.producer";
 import { sendToDLQ } from "../producer/sendToDlq";
 import { logger } from "@/shared/utils/logger";
 import { RetryEnvelope } from "./retry.envelope";
+import { accountStatus } from "@/modules/auth/authinterface";
+import User from "@/modules/auth/authmodel";
+import { markProvisioningFailedForEvent } from "@/kafka/retry.helpers/provisionin.helper";
 
 interface RetryOrDLQParams {
   topic: string;
@@ -12,20 +15,17 @@ interface RetryOrDLQParams {
 }
 
 export async function retryOrDLQ({ topic, message, error }: RetryOrDLQParams) {
-
   const isTransient = (error as any).isTransient === true;
   const isPermanent = (error as any).isPermanent === true;
-
 
   try {
     if (isPermanent || error.name === "PermanentError") {
       await sendToDLQ(topic, message, error);
-      logger.error("Permanent error, sent to DLQ",);
+      logger.error("Permanent error, sent to DLQ");
       return;
     }
 
     if (isTransient || error.name === "TransientError") {
-
       try {
         await sendToRetry(topic, {
           ...message,
@@ -35,7 +35,7 @@ export async function retryOrDLQ({ topic, message, error }: RetryOrDLQParams) {
           },
         });
         logger.error("Transient error, sent to retry", {
-          topic
+          topic,
         });
         return;
       } catch (retryError: any) {
@@ -44,16 +44,15 @@ export async function retryOrDLQ({ topic, message, error }: RetryOrDLQParams) {
       }
     }
 
+    await markProvisioningFailedForEvent(message.event);
     await sendToDLQ(topic, message, error);
     logger.error("Unknown error type, sent to DLQ");
   } catch (fatalError: any) {
-    logger.error(
-      "Fatal error in retryOrDLQ",
-      {
-        eventId: message.event.eventId,
-        topic,
-        error: fatalError.message,
-      });
+    logger.error("Fatal error in retryOrDLQ", {
+      eventId: message.event.eventId,
+      topic,
+      error: fatalError.message,
+    });
   }
 
   // logger.error("Unknown error type, treating as transient", { error: error.message });

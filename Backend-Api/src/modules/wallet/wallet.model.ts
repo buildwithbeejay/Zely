@@ -6,7 +6,7 @@ export enum WalletStatus {
   ACTIVE = "ACTIVE",
   FROZEN = "FROZEN",
   CLOSED = "CLOSED",
-  RECONCILING = "RECONCILING"
+  RECONCILING = "RECONCILING",
 }
 
 export enum FreezeReason {
@@ -20,7 +20,6 @@ export interface IUser {
   email: string;
   name: string;
 }
-
 
 export interface WalletDocument extends Document {
   userId: IUser; //Types.ObjectId;
@@ -40,7 +39,7 @@ export interface WalletDocument extends Document {
   createdAt: Date;
 
   // Audit trail for the current unfreeze (latest only)
-  unfrozenBy?: Types.ObjectId;
+  unfrozenBy?: String | null; // User ID of the person who unfroze the wallet
   unfrozenAt?: Date;
   unfreezeReason?: string;
 
@@ -48,9 +47,9 @@ export interface WalletDocument extends Document {
   freezeHistory: Array<{
     frozenAt: Date;
     freezeReason: string;
-    frozenBy?: Types.ObjectId | null;  // null = system-initiated (e.g., reconciliation)
+    frozenBy?: String | null; // null = system-initiated (e.g., reconciliation)
     unfrozenAt?: Date;
-    unfrozenBy?: Types.ObjectId;
+    unfrozenBy?: String | null; // null = system-initiated (e.g., reconciliation)
     unfreezeReason?: string;
   }>;
 }
@@ -78,7 +77,7 @@ const WalletSchema = new Schema(
       enum: Object.values(LedgerAccountType),
       required: true,
       index: true,
-      default: LedgerAccountType.MAIN_CHECKINGS
+      default: LedgerAccountType.MAIN_CHECKINGS,
     },
 
     currency: {
@@ -91,7 +90,6 @@ const WalletSchema = new Schema(
       type: Number,
       required: true,
       default: 0,
-      min: 0,
     },
 
     walletId: {
@@ -117,14 +115,16 @@ const WalletSchema = new Schema(
       index: true,
     },
 
-    freezeReason: { type: String, enum: Object.values(FreezeReason), default: null },
+    freezeReason: {
+      type: String,
+      default: null,
+    },
 
     freezeUntil: { type: Date, default: null },
 
     unfrozenBy: {
-      type: Types.ObjectId,
-      ref: "User",
-      default: null
+      type: String,
+      default: null,
     },
     unfrozenAt: { type: Date, default: null },
     unfreezeReason: { type: String, default: null },
@@ -134,11 +134,11 @@ const WalletSchema = new Schema(
         {
           frozenAt: { type: Date, required: true },
           freezeReason: { type: String, required: true },
-          frozenBy: { type: Types.ObjectId, ref: "User", default: null },
+          frozenBy: { type: String, default: null },
           unfrozenAt: { type: Date, default: null },
-          unfrozenBy: { type: Types.ObjectId, ref: "User", default: null },
+          unfrozenBy: { type: String, default: null },
           unfreezeReason: { type: String, default: null },
-        }
+        },
       ],
       default: [],
     },
@@ -160,7 +160,7 @@ const WalletSchema = new Schema(
     timestamps: true,
     optimisticConcurrency: true,
     versionKey: "version",
-  }
+  },
 );
 
 // At the bottom of the file, for any code still importing WalletType

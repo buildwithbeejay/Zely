@@ -1,14 +1,18 @@
 import { Wallet, WalletStatus } from "@/modules/wallet/wallet.model";
-import { LedgerAccount, LedgerAccountType } from "@/modules/ledger/ledger.account.model";
-import { LedgerEntry, LedgerEntryNature } from "@/modules/ledger/ledger.entry.model";
+import {
+  LedgerAccount,
+  LedgerAccountType,
+} from "@/modules/ledger/ledger.account.model";
+import {
+  LedgerEntry,
+  LedgerEntryNature,
+} from "@/modules/ledger/ledger.entry.model";
 import { logger } from "@/shared/utils/logger";
 import mongoose from "mongoose";
 import { freezeWallet } from "../helpers/resolvers";
 // import { reconciliationQueue } from "@/workers/reconcileLedger.worker";
 
-
-
-export class LedgerReconciliationService {
+export class Lrvice {
   static async reconcileWallet(walletId: string) {
     const session = await mongoose.startSession();
 
@@ -18,7 +22,7 @@ export class LedgerReconciliationService {
       const wallet = await Wallet.findOneAndUpdate(
         { _id: walletId, status: "ACTIVE" },
         { $set: { status: "RECONCILING" } },
-        { session }
+        { session },
       );
 
       if (!wallet) {
@@ -51,7 +55,9 @@ export class LedgerReconciliationService {
         return;
       }
 
-      const aggregateBalance = async (ledgerAccountId: mongoose.Types.ObjectId) => {
+      const aggregateBalance = async (
+        ledgerAccountId: mongoose.Types.ObjectId,
+      ) => {
         const res = await LedgerEntry.aggregate([
           { $match: { ledgerAccountId: ledgerAccountId } },
           {
@@ -73,13 +79,15 @@ export class LedgerReconciliationService {
         return res[0]?.balance ?? 0;
       };
 
-      console.log("Aggregate balance", await aggregateBalance(checkingLedger._id));
-      console.log(checkingLedger)
-
+      console.log(
+        "Aggregate balance",
+        await aggregateBalance(checkingLedger._id),
+      );
+      console.log(checkingLedger);
 
       const [ledgerAvailable] = await Promise.all([
         aggregateBalance(checkingLedger._id),
-      ])
+      ]);
 
       const ledgerTotal = ledgerAvailable;
 
@@ -100,15 +108,15 @@ export class LedgerReconciliationService {
       await Wallet.updateOne(
         { _id: wallet._id },
         { $set: { status: "ACTIVE" } },
-        { session }
+        { session },
       );
 
-      await session.commitTransaction()
+      await session.commitTransaction();
 
       //🔥 Option 1: Auto-heal (optional)
       await Wallet.updateOne(
         { _id: wallet._id },
-        { $set: { availableBalance: ledgerAvailable } }
+        { $set: { availableBalance: ledgerAvailable } },
       );
 
       logger.warn("Wallet balance auto-healed", {
@@ -149,7 +157,3 @@ export class LedgerReconciliationService {
     console.log("All wallets enqueued for reconciliation");
   }
 }
-
-
-
-

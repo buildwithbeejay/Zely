@@ -1,5 +1,5 @@
-import { FeeConfig } from './fee.model';
-import { logger } from '@/shared/utils/logger';
+import { FeeConfig } from "./fee.model";
+import { logger } from "@/shared/utils/logger";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface IFeeTier {
@@ -13,11 +13,11 @@ interface CachedFeeConfig {
   cachedAt: number;
 }
 
-// ─── Cache ────────────────────────────────────────────────────────────────────
+// ─── Cache
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const feeConfigCache = new Map<string, CachedFeeConfig>();
 
-// ─── Fallback tiers ───────────────────────────────────────────────────────────
+// ─── Fallback tiers
 const FALLBACK_FEE_TIERS: IFeeTier[] = [
   { min: 1, max: 1_000, fee: 10 },
   { min: 1_001, max: 5_000, fee: 25 },
@@ -26,10 +26,10 @@ const FALLBACK_FEE_TIERS: IFeeTier[] = [
   { min: 50_001, max: 999_999_999, fee: 200 },
 ];
 
-// ─── Load tiers from DB ───────────────────────────────────────────────────────
+// ─── Load tiers from DB
 async function getFeeConfig(
   currency: string,
-  transferType: string
+  transferType: string,
 ): Promise<IFeeTier[]> {
   const cacheKey = `${currency}:${transferType}`;
   const cached = feeConfigCache.get(cacheKey);
@@ -47,7 +47,9 @@ async function getFeeConfig(
     });
 
     if (!config) {
-      logger.warn(`No fee config in DB for ${currency}/${transferType} — using fallback`);
+      logger.warn(
+        `No fee config in DB for ${currency}/${transferType} — using fallback`,
+      );
       return FALLBACK_FEE_TIERS;
     }
 
@@ -57,9 +59,8 @@ async function getFeeConfig(
     });
 
     return config.tiers;
-
   } catch (err: any) {
-    logger.error('Failed to load fee config from DB — using fallback tiers', {
+    logger.error("Failed to load fee config from DB — using fallback tiers", {
       error: err.message,
       currency,
       transferType,
@@ -75,20 +76,20 @@ async function getFeeConfig(
   }
 }
 
-// ─── Clear cache ──────────────────────────────────────────────────────────────
+// ─── Clear cache
 export function clearFeeConfigCache(): void {
   feeConfigCache.clear();
-  logger.info('Fee config cache cleared');
+  logger.info("Fee config cache cleared");
 }
 
-// ─── Fee calculation ──────────────────────────────────────────────────────────
+// ─── Fee calculation
 export async function calculateFeeBreakdown(
   amount: number,
   currency: string,
-  transferType: string = 'P2P_TRANSFER'
+  transferType: string = "P2P_TRANSFER",
 ): Promise<{ fee: number; totalDeducted: number; currency: string }> {
   const tiers = await getFeeConfig(currency, transferType);
-  const tier = tiers.find(t => amount >= t.min && amount <= t.max);
+  const tier = tiers.find((t) => amount >= t.min && amount <= t.max);
   const fee = tier ? tier.fee : 0;
 
   return {

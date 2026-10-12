@@ -67,30 +67,45 @@ class userService {
   ) => {
     const user = await this.userModel
       .findById(userSub)
-      .select("accountStatus userId")
+      .select("accountStatus userId provisioningRetryCount")
       .lean();
 
-    if (!user) {
-      throw new NotFoundError("USER_NOT_FOUND");
-    }
+    if (!user) throw new NotFoundError("USER_NOT_FOUND");
 
-    // Not ready yet — return current status
+    // Failed — show error, allow retry
     if (user.accountStatus === accountStatus.PROVISIONING_FAILED) {
       return {
-        ok: false,
+        ok: true,
         status: user.accountStatus,
         ready: false,
         failed: true,
+        canRetry: (user.provisioningRetryCount ?? 0) < 3,
+        retryCount: user.provisioningRetryCount ?? 0,
         message: "ACCOUNT_PROVISIONING_FAILED",
       };
     }
 
+    // Retrying — show "trying again" message
+    if (user.accountStatus === accountStatus.PROVISIONING_RETRYING) {
+      return {
+        ok: true,
+        status: user.accountStatus,
+        ready: false,
+        failed: false,
+        canRetry: false, // already retrying
+        message: "ACCOUNT_PROVISIONING_RETRYING",
+      };
+    }
+
+    // Still provisioning
     if (user.accountStatus !== accountStatus.ACCOUNT_READY) {
       return {
         ok: true,
         status: user.accountStatus,
         ready: false,
         failed: false,
+        canRetry: false,
+        message: "ACCOUNT_PROVISIONING_IN_PROGRESS",
       };
     }
 
@@ -107,10 +122,29 @@ class userService {
     );
     const savingsAccount = accounts.find((a) => a.type === AccountType.SAVINGS);
 
+    if (!checkingAccount?.accountNumber || !savingsAccount?.accountNumber) {
+      // User is marked ready but the accounts are missing: data is inconsistent.
+      // Retrying provisioning could create duplicates, so send them to support.
+      console.error("ACCOUNT_STATE_INCONSISTENT", {
+        userId: user.userId,
+        hasChecking: !!checkingAccount,
+        hasSavings: !!savingsAccount,
+      });
+      return {
+        ok: true,
+        status: user.accountStatus,
+        ready: false,
+        failed: true,
+        canRetry: false,
+        message: "ACCOUNT_STATE_INCONSISTENT",
+      };
+    }
+
     return {
       ok: true,
       status: accountStatus.ACCOUNT_READY,
       ready: true,
+      canRetry: false,
       accounts: {
         checking: checkingAccount?.accountNumber ?? null,
         savings: savingsAccount?.accountNumber ?? null,
@@ -431,6 +465,7 @@ class userService {
     if (query.direction) filter.direction = query.direction;
     if (query.walletType) filter.walletType = query.walletType;
     if (query.status) filter.status = query.status;
+
 
     // Add to the filter
     const [transactions, total] = await Promise.all([

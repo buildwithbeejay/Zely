@@ -13,6 +13,7 @@ import {
   IUser,
   Wallet,
   WalletDocument,
+  WalletStatus,
   WalletType,
 } from "../wallet/wallet.model";
 
@@ -213,24 +214,26 @@ export const ensureWalletsAreActive = async (
     Wallet.findById(receiverWalletId).session(session),
   ]);
 
-  if (!receiverWallet || receiverWallet.status !== "ACTIVE") {
-    throw new BadRequestError(
-      `Wallet ${receiverWallet?.walletId} is frozen or inactive (Reason: ${receiverWallet?.freezeReason})`,
-    );
-  }
-
-  if (!senderWallet || senderWallet.status !== "ACTIVE") {
-    throw new BadRequestError(
-      `Wallet is frozen or inactive (Reason: ${senderWallet?.freezeReason})`,
-    );
-  }
-
   if (!senderWallet || !receiverWallet) {
     throw new NotFoundError("Sender or receiver wallet not found");
   }
 
-  if (senderWallet.status !== "ACTIVE" || receiverWallet.status !== "ACTIVE") {
-    throw new BadRequestError("Sender or receiver wallet is not active");
+  // Sender must always be fully active
+  if (senderWallet.status !== WalletStatus.ACTIVE) {
+    throw new BadRequestError(
+      `Your wallet is frozen or inactive (Reason: ${senderWallet.freezeReason ?? "contact support"})`,
+    );
+  }
+
+  // Receiver can be ACTIVE or FROZEN (frozen wallets can still receive
+  // credits so the user can clear a negative balance and auto-recover)
+  if (
+    receiverWallet.status !== WalletStatus.ACTIVE &&
+    receiverWallet.status !== WalletStatus.FROZEN
+  ) {
+    throw new BadRequestError(
+      `Recipient wallet is inactive (Reason: ${receiverWallet.freezeReason ?? "contact support"})`,
+    );
   }
 };
 

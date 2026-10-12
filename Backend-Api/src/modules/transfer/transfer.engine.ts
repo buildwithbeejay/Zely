@@ -1,30 +1,32 @@
-import mongoose, { Types } from "mongoose";
 import {
-  markCompleted,
   extEnsureIdempotence,
+  markCompleted,
 } from "@/modules/helpers/ext.idempotence";
 import BadRequestError from "@/shared/errors/badRequest";
+import mongoose, { Types } from "mongoose";
 
+import { IRequestContext } from "@/config/interfaces/request.interface";
 import {
   generateReferenceId,
   generateTransactionId,
 } from "@/shared/utils/id.generator";
-import { IRequestContext } from "@/config/interfaces/request.interface";
 import TransactionBuilder from "../ledger/ledger.transaction.builder";
 
 import { lockAccountToPreventConcurrency } from "../helpers/resolvers";
 
-import { Wallet, WalletDocument } from "../wallet/wallet.model";
-import { LedgerEntryNature } from "../ledger/ledger.entry.model";
-import { Account } from "../account/account.model";
+import { generateAccrualId } from "@/shared/utils/id.generator";
 import { AccountDocument } from "../account/account.interface";
+import { Account } from "../account/account.model";
 import {
   LedgerAccount,
   LedgerAccountDocument,
   LedgerAccountType,
   LedgerOwnerType,
 } from "../ledger/ledger.account.model";
+import { LedgerEntryNature } from "../ledger/ledger.entry.model";
 import { VaultDocument } from "../vault/vault.model";
+import { Wallet, WalletDocument } from "../wallet/wallet.model";
+import { FeeAccrual, FeeCategory } from "@/modules/fee/fee.accrual.model";
 
 type BaseTransferInput = {
   senderAccount: AccountDocument;
@@ -151,15 +153,15 @@ class TransferEngine {
 
     // ─── FEE LEDGER ENTRIES ────────────────────────────────────────────────
     if (fee > 0) {
-      // Look up treasury ledger account
-      const treasuryLedgerAccount = await LedgerAccount.findOne({
+      // Look up revenue ledger account
+      const revenueLedgerAccount = await LedgerAccount.findOne({
         ownerType: LedgerOwnerType.SYSTEM,
-        type: LedgerAccountType.SYSTEM_TREASURY,
+        type: LedgerAccountType.SYSTEM_REVENUE,
         currency,
       }).session(session);
 
-      if (!treasuryLedgerAccount) {
-        throw new BadRequestError("Treasury wallet not found");
+      if (!revenueLedgerAccount) {
+        throw new BadRequestError("Revenue ledger account not found");
       }
 
       const feeBuilder = new TransactionBuilder("FEE");
@@ -175,7 +177,7 @@ class TransferEngine {
       });
 
       feeBuilder.addCredit({
-        ledgerAccountId: treasuryLedgerAccount._id,
+        ledgerAccountId: revenueLedgerAccount._id,
         amount: fee,
         currency,
         nature: LedgerEntryNature.CREDIT,
@@ -185,12 +187,11 @@ class TransferEngine {
       });
 
       await feeBuilder.commit(session);
-      console.log(feeBuilder);
 
       await Wallet.findOneAndUpdate(
         {
-          userPublicId: treasuryLedgerAccount.userPublicId,
-          type: treasuryLedgerAccount.type,
+          userPublicId: revenueLedgerAccount.userPublicId,
+          type: revenueLedgerAccount.type,
           currency,
         },
         { $inc: { availableBalance: fee, version: 1 } },

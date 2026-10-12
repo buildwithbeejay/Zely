@@ -2,7 +2,6 @@ import { IRequestContext } from "@/config/interfaces/request.interface";
 import { emitOutboxEvent } from "@/infrastructure/helpers/emit.audit.helper";
 import { AuditAction, AuditStatus } from "@/modules/audit/audit.interface";
 import {
-  LedgerAccount,
   LedgerAccountType,
   LedgerOwnerType,
 } from "@/modules/ledger/ledger.account.model";
@@ -33,10 +32,10 @@ import {
   Wallet,
   WalletStatus,
 } from "@/modules/wallet/wallet.model";
+import BadRequestError from "@/shared/errors/badRequest";
 import { generateEventId } from "@/shared/utils/id.generator";
 import { logger } from "@/shared/utils/logger";
-import { ClientSession } from "mongoose";
-import { Types } from "mongoose";
+import { ClientSession, Types } from "mongoose";
 
 const DRIFT_THRESHOLD = 0;
 
@@ -297,6 +296,7 @@ export async function reconcileLedgerAccount(
               status: WalletStatus.RECONCILING,
               freezeReason: FreezeReason.SUSPICIOUS,
               freezeUntil: null,
+              locked: true,
             },
             $push: {
               freezeHistory: {
@@ -488,6 +488,12 @@ export async function reconcilePaystackSettlements(
     paystackSecretKey,
   );
 
+  if (!apiHealthy) {
+    throw new BadRequestError(
+      "Paystack API unavailable. Settlement reconciliation aborted.",
+    );
+  }
+
   const drifts: PaymentDriftRecord[] = [];
 
   // 3. Build lookup maps
@@ -575,9 +581,13 @@ async function fetchPaystackTransactions(
   startDate: Date,
   endDate: Date,
   secretKey: string,
-): Promise<{ transactions: PaystackTransaction[]; apiHealthy: boolean }> {
+): Promise<{
+  transactions: PaystackTransaction[];
+  apiHealthy: boolean;
+}> {
   let page = 1;
   const perPage = 100;
+  const allTransactions: PaystackTransaction[] = [];
 
   while (true) {
     try {
@@ -601,16 +611,48 @@ async function fetchPaystackTransactions(
       if (!response.ok) {
         logger.error("Paystack API returned error", {
           status: response.status,
+          page,
         });
-        return { transactions: [], apiHealthy: false };
+
+        return {
+          transactions: [],
+          apiHealthy: false,
+        };
       }
+
       const data = (await response.json()) as PaystackTransactionResponse;
-      return { transactions: data.data ?? [], apiHealthy: true };
+
+      const pageTransactions = data.data ?? [];
+
+      allTransactions.push(...pageTransactions);
+
+      logger.info("Paystack transactions page fetched", {
+        page,
+        count: pageTransactions.length,
+      });
+
+      if (pageTransactions.length < perPage) {
+        break;
+      }
+
+      page += 1;
     } catch (err: any) {
-      logger.error("Paystack API unreachable", { error: err.message });
-      return { transactions: [], apiHealthy: false };
+      logger.error("Paystack API unreachable", {
+        error: err.message,
+        page,
+      });
+
+      return {
+        transactions: [],
+        apiHealthy: false,
+      };
     }
   }
+
+  return {
+    transactions: allTransactions,
+    apiHealthy: true,
+  };
 }
 
 export async function escalateUnresolvedDrifts(context: IRequestContext) {
