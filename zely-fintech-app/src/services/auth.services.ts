@@ -100,15 +100,17 @@ export const authService = {
   },
 
   getProvisioningStatus: async (): Promise<{
-    ok: boolean;
-    status: string;
-    ready: boolean;
-    failed?: boolean;
-    message?: string;
-    accounts?: {
-      checking: string | null;
-      savings: string | null;
-    };
+  ok: boolean;
+  status: string;
+  ready: boolean;
+  failed?: boolean;
+  canRetry?: boolean;
+  retryCount?: number;
+  message?: string;
+  accounts?: {
+    checking: string | null;
+    savings: string | null;
+}
   }> => {
     const response = await axiosPrivate.get("/users/provisioning-status");
     return response.data;

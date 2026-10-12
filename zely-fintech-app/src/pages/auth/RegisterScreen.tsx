@@ -79,11 +79,25 @@ const RegisterScreen: React.FC = () => {
         );
         navigate("/verify", { state: { email, mode: "email" } });
       }
-    } catch (error: any) {
-      const msg =
-        error.response?.data?.message ||
-        "Registration failed. Please try again.";
-      showToast("error", msg);
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const data = err?.response?.data;
+
+      if (status === 429) {
+        const retryAfter = Number(err.response.headers?.["retry-after"]);
+        showToast(
+          "error",
+          retryAfter
+            ? `Too many attempts. Please try again in ${Math.ceil(retryAfter / 60)} minute(s).`
+            : "Too many attempts. Please wait a few minutes and try again.",
+        );
+        return;
+      }
+
+      showToast(
+        "error",
+        data?.message || "Registration failed. Please try again.",
+      );
     } finally {
       setIsLoading(false);
     }

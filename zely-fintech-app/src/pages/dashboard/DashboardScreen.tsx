@@ -29,8 +29,12 @@ const DashboardScreen: React.FC = () => {
     loadingTransactions,
     refreshWallets,
 
+    errorTransactionsTitle,
     errorTransactions,
     refreshTransactions,
+
+    errorWallets,
+    errorWalletsTitle,
   } = useDashboardData();
 
   useEffect(() => {
@@ -372,8 +376,9 @@ const DashboardScreen: React.FC = () => {
             <StateRenderer
               loading={loadingTransactions}
               error={errorTransactions}
+              errorTitle={errorTransactionsTitle ?? "Something went wrong"}
               data={transactions}
-              isEmpty={!loadingTransactions && transactions.length === 0} // ← explicit empty check
+              isEmpty={!loadingTransactions && transactions.length === 0}
               onRetry={refreshTransactions}
               emptyMessage="No recent transactions found."
             >

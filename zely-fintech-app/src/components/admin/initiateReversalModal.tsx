@@ -91,45 +91,29 @@ export const InitiateReversalModal: React.FC<InitiateReversalModalProps> = ({
     setInlineError(null);
 
     try {
-      const res = await reversalService.initiateReversal({
+      const reversal = await reversalService.initiateReversal({
         originalTransactionRef: originalTransactionRef.trim(),
         reason,
         notes: notes.trim(),
         reverseFee,
       });
 
-      if (res.success) {
-        showToast(
-          "success",
-          `Reversal initiated successfully: ${res.reversal.reversalId}`,
-        );
-        onSuccess(res.reversal);
-        // Reset form & close
-        setOriginalTransactionRef("");
-        setNotes("");
-        setInlineError(null);
-        onClose();
-      }
+      showToast("success", `Reversal initiated: ${reversal.reversalId}`);
+      onSuccess(reversal);
+      setOriginalTransactionRef("");
+      setNotes("");
+      setReverseFee(true);
+      setInlineError(null);
+      onClose();
     } catch (err: any) {
       const msg =
-        err.message || "An unexpected error occurred while initiating reversal";
+        err?.response?.data?.message ||
+        err?.message ||
+        "An unexpected error occurred";
       setInlineError(msg);
-      // Keep modal open per specification
     } finally {
       setLoading(false);
     }
-  };
-
-  // Helper presets for testing different error/success scenarios
-  const applyPreset = (
-    ref: string,
-    reasonVal: ReversalReason,
-    noteVal: string,
-  ) => {
-    setOriginalTransactionRef(ref);
-    setReason(reasonVal);
-    setNotes(noteVal);
-    setInlineError(null);
   };
 
   return (
@@ -223,65 +207,6 @@ export const InitiateReversalModal: React.FC<InitiateReversalModalProps> = ({
             <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
               The transaction reference of the completed transfer to reverse
             </p>
-
-            {/* Quick Test Presets */}
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span className="text-[10px] text-slate-400 font-semibold">
-                Test presets:
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  applyPreset(
-                    "TRF-NGN-20260928-SUCCESS",
-                    "FRAUD",
-                    "Confirmed account takeover dispute by bank",
-                  )
-                }
-                className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-purple-100 hover:text-purple-700 transition-colors"
-              >
-                Valid (Standard)
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  applyPreset(
-                    "TRF-NGN-20260920-881920",
-                    "DUPLICATE_TRANSACTION",
-                    "Testing already reversed error",
-                  )
-                }
-                className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-amber-100 hover:text-amber-700 transition-colors"
-              >
-                Already Reversed
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  applyPreset(
-                    "TX-REV-9041-COMP",
-                    "OTHER",
-                    "Attempting to reverse a reversal",
-                  )
-                }
-                className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-red-100 hover:text-red-700 transition-colors"
-              >
-                Is-A-Reversal
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  applyPreset(
-                    "TRF-NOT_FOUND-404",
-                    "OTHER",
-                    "Testing 404 handler",
-                  )
-                }
-                className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 transition-colors"
-              >
-                404 Not Found
-              </button>
-            </div>
           </div>
 
           {/* Field: reason */}

@@ -1,58 +1,49 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard,
-  Users,
-  CreditCard,
-  Settings,
-  LogOut,
-  Bell,
-  Search,
-  MoreHorizontal,
-  ChevronDown,
-  CheckCircle2,
-  AlertCircle,
-  X,
-  Loader2,
-  Trash2,
-  Edit2,
-  Shield,
-  User as UserIcon,
-  ArrowUpRight,
-  ArrowDownLeft,
-  Filter,
-  Download,
-  Gauge,
-  Calendar,
-  Eye,
-  Wallet,
-  Clock,
   Activity,
-  ChevronUp,
-  History as HistoryIcon,
-  Info,
-  Menu,
-  DollarSign,
-  CheckSquare,
-  Square,
-  AlertTriangle,
-  Lock,
-  Globe,
-  BellRing,
-  Zap,
-  XCircle,
+  AlertCircle,
   AlertOctagon,
+  AlertTriangle,
+  ArrowUpRight,
+  CheckCircle2,
+  CheckSquare,
+  ChevronDown,
+  Clock,
+  CreditCard,
+  DollarSign,
+  Download,
+  Filter,
+  Globe,
+  History as HistoryIcon,
+  Loader2,
+  Search,
+  Settings,
+  Shield,
+  Square,
+  Trash2,
+  User as UserIcon,
+  Users,
+  Wallet,
+  XCircle,
+  Zap,
 } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import CustomSelect from "../../components/common/CustomSelect";
 import { useToast } from "../../context/ToastContext";
 import { authService } from "../../services/auth.services";
-import CustomSelect from "../../components/common/CustomSelect";
 import AdminReconciliationScreen from "./AdminReconciliationScreen";
 
-import { Smartphone, Laptop, MapPin } from "lucide-react";
+import { Laptop, MapPin, Smartphone } from "lucide-react";
 
-import UsersTab from "@/pages/admin/userTab";
-import GlobalTransactionsPanel from "@/pages/admin/GlobalTransactionsTab";
 import AuditLogsTab from "@/components/AuditLogsTab";
+import GlobalTransactionsPanel from "@/pages/admin/GlobalTransactionsTab";
+import UsersTab from "@/pages/admin/userTab";
+import {
+  adminDashboardService,
+  DashboardStats,
+} from "@/services/adminDashboard.service";
+import { axiosPrivate } from "@/api/client";
+import FundManagementTab from "@/pages/admin/FundManagementTab";
 
 type UserStatus = "active" | "suspended" | "pending";
 type UserRole = "user" | "admin";
@@ -453,6 +444,44 @@ const AdminDashboardScreen: React.FC = () => {
   const [editFormData, setEditFormData] = useState<Partial<UserData>>({});
   const [selectedReconUser, setSelectedReconUser] = useState<any | null>(null);
 
+  // State
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
+
+  // Effect
+  useEffect(() => {
+    if (activeTab !== "overview") return;
+    const controller = new AbortController();
+    setStatsLoading(true);
+    setStatsError(null);
+
+    adminDashboardService
+      .getStats(controller.signal)
+      .then(setStats)
+      .catch((e) => {
+        if (e.code === "ERR_CANCELED") return;
+        console.error("Stats error:", e.response?.data ?? e.message);
+        setStatsError(e.response?.data?.message ?? e.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setStatsLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== "overview") return;
+
+    fetch("/admin/dashboard/stats", {
+      credentials: "include",
+    })
+      .then((res) => res.json())
+      .then((data) => console.log("raw response:", data))
+      .catch((e) => console.error("fetch error:", e));
+  }, [activeTab]);
+
   const handleLogout = async () => {
     await authService.logout();
     showToast("success", "Logged out successfully");
@@ -607,64 +636,76 @@ const AdminDashboardScreen: React.FC = () => {
         <div className="space-y-10 animate-in slide-in-from-bottom-4 duration-500">
           {/* Stats Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {[
-              {
-                label: "Total Users",
-                value: users.length,
-                icon: Users,
-                color: "text-blue-500",
-                bg: "bg-blue-100 dark:bg-blue-900/20",
-                trend: "+12.5%",
-              },
-              {
-                label: "Total Volume",
-                value: `$${transactions.reduce((acc, curr) => acc + curr.amount, 0).toLocaleString()}`,
-                icon: ArrowUpRight,
-                color: "text-green-500",
-                bg: "bg-green-100 dark:bg-green-900/20",
-                trend: "+5.2%",
-              },
-              {
-                label: "System Health",
-                value: "99.9%",
-                icon: Activity,
-                color: "text-indigo-500",
-                bg: "bg-indigo-100 dark:bg-indigo-900/20",
-                trend: "Stable",
-              },
-              {
-                label: "Pending KYC",
-                value: users.filter((u) => u.status === "pending").length,
-                icon: Shield,
-                color: "text-orange-500",
-                bg: "bg-orange-100 dark:bg-orange-900/20",
-                trend: "Needs Action",
-              },
-            ].map((stat, i) => (
-              <div
-                key={i}
-                className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between group hover:border-primary/30 transition-all duration-300"
-              >
-                <div className="flex justify-between items-start mb-4">
-                  <div
-                    className={`p-4 rounded-2xl ${stat.bg} ${stat.color} group-hover:scale-110 transition-transform`}
-                  >
-                    <stat.icon className="w-6 h-6" />
-                  </div>
-                  <span
-                    className={`text-[10px] font-black px-2 py-1 rounded-lg ${stat.trend.includes("+") ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}
-                  >
-                    {stat.trend}
-                  </span>
-                </div>
-                <p className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">
-                  {stat.label}
-                </p>
-                <h3 className="text-3xl font-black mt-1 tracking-tight">
-                  {stat.value}
-                </h3>
+            {statsLoading && (
+              <div className="col-span-4 text-center text-slate-400 py-8 text-sm">
+                Loading...
               </div>
-            ))}
+            )}
+            {statsError && (
+              <div className="col-span-4 text-center text-red-500 py-8 text-sm">
+                {statsError}
+              </div>
+            )}
+            {!statsLoading &&
+              stats &&
+              [
+                {
+                  label: "Total Users",
+                  value: stats.totalUsers,
+                  icon: Users,
+                  color: "text-blue-500",
+                  bg: "bg-blue-100 dark:bg-blue-900/20",
+                  trend: stats.userGrowthTrend,
+                },
+                {
+                  label: "Total Volume",
+                  value: `₦${stats.totalVolume.toLocaleString()}`,
+                  icon: ArrowUpRight,
+                  color: "text-green-500",
+                  bg: "bg-green-100 dark:bg-green-900/20",
+                  trend: stats.volumeTrend,
+                },
+                {
+                  label: "System Health",
+                  value: `${stats.systemHealthPercent}%`,
+                  icon: Activity,
+                  color: "text-indigo-500",
+                  bg: "bg-indigo-100 dark:bg-indigo-900/20",
+                  trend: "Stable",
+                },
+                {
+                  label: "Pending KYC",
+                  value: stats.pendingKyc,
+                  icon: Shield,
+                  color: "text-orange-500",
+                  bg: "bg-orange-100 dark:bg-orange-900/20",
+                  trend: "Needs Action",
+                },
+              ].map((stat, i) => (
+                <div
+                  key={i}
+                  className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col justify-between group hover:border-primary/30 transition-all duration-300"
+                >
+                  <div className="flex justify-between items-start mb-4">
+                    <div
+                      className={`p-4 rounded-2xl ${stat.bg} ${stat.color} group-hover:scale-110 transition-transform`}
+                    >
+                      <stat.icon className="w-6 h-6" />
+                    </div>
+                    <span
+                      className={`text-[10px] font-black px-2 py-1 rounded-lg ${stat.trend.includes("+") ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}
+                    >
+                      {stat.trend}
+                    </span>
+                  </div>
+                  <p className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">
+                    {stat.label}
+                  </p>
+                  <h3 className="text-3xl font-black mt-1 tracking-tight">
+                    {stat.value}
+                  </h3>
+                </div>
+              ))}
           </div>
 
           {/* Quick Access & Align Section */}
@@ -932,782 +973,13 @@ const AdminDashboardScreen: React.FC = () => {
       {activeTab === "transactions" && <GlobalTransactionsPanel />}
 
       {/* --- FUNDS MANAGEMENT TAB --- */}
-      {activeTab === "funds" && (
-        <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
-          <div className="flex space-x-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl w-fit">
-            {["single", "bulk"].map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setFundsTab(tab as "single" | "bulk")}
-                className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${fundsTab === tab ? "bg-white dark:bg-slate-700 text-primary shadow-sm" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}
-              >
-                {tab === "single" ? "Single Credit" : "Bulk Distribution"}
-              </button>
-            ))}
-          </div>
-
-          {fundsTab === "single" ? (
-            <div className="bg-white dark:bg-slate-900 rounded-2xl p-8 border border-slate-200 dark:border-slate-800 max-w-2xl">
-              <h3 className="text-xl font-bold mb-6">Credit User Account</h3>
-              <form onSubmit={handleSingleCredit} className="space-y-6">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">
-                    Select User
-                  </label>
-                  <CustomSelect
-                    value={selectedUserForCredit}
-                    onChange={(value) => setSelectedUserForCredit(value)}
-                    options={[
-                      { value: "", label: "Select a user..." },
-                      ...users.map((u) => ({
-                        value: u.id,
-                        label: `${u.name} (${u.email})`,
-                      })),
-                    ]}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">
-                    Amount
-                  </label>
-                  <div className="relative">
-                    <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                    <input
-                      type="number"
-                      value={creditAmount}
-                      onChange={(e) => setCreditAmount(e.target.value)}
-                      className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-12 pr-4 py-3 outline-none focus:ring-2 focus:ring-primary font-bold text-lg"
-                      placeholder="0.00"
-                    />
-                  </div>
-                </div>
-                <button
-                  type="submit"
-                  disabled={
-                    isProcessingFunds || !selectedUserForCredit || !creditAmount
-                  }
-                  className="w-full py-4 bg-primary text-white font-bold rounded-xl hover:bg-primary-light transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {isProcessingFunds ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : (
-                    "Credit Funds"
-                  )}
-                </button>
-              </form>
-            </div>
-          ) : (
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-              <div className="p-6 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                <h3 className="text-xl font-bold">Bulk Distribution</h3>
-                <div className="flex items-center gap-4">
-                  <div className="relative">
-                    <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                    <input
-                      type="number"
-                      value={creditAmount}
-                      onChange={(e) => setCreditAmount(e.target.value)}
-                      className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg pl-9 pr-4 py-2 text-sm font-bold w-32 focus:ring-2 focus:ring-primary outline-none"
-                      placeholder="Amount"
-                    />
-                  </div>
-                  <button
-                    onClick={handleBulkCredit}
-                    disabled={
-                      isProcessingFunds ||
-                      selectedUsersForBulk.length === 0 ||
-                      !creditAmount
-                    }
-                    className="bg-primary px-4 py-2 text-white font-bold rounded-lg text-sm disabled:opacity-50 transition-colors"
-                  >
-                    {isProcessingFunds
-                      ? "Processing..."
-                      : `Distribute to ${selectedUsersForBulk.length}`}
-                  </button>
-                </div>
-              </div>
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 uppercase font-bold text-[10px] tracking-widest">
-                  <tr>
-                    <th className="px-6 py-4 w-12">
-                      <button
-                        onClick={toggleAllUsers}
-                        className="text-slate-400 hover:text-primary"
-                      >
-                        {selectedUsersForBulk.length === users.length ? (
-                          <CheckSquare className="w-5 h-5" />
-                        ) : (
-                          <Square className="w-5 h-5" />
-                        )}
-                      </button>
-                    </th>
-                    <th className="px-6 py-4">User</th>
-                    <th className="px-6 py-4">Email</th>
-                    <th className="px-6 py-4">Status</th>
-                    <th className="px-6 py-4">Balance</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {users.map((user) => (
-                    <tr
-                      key={user.id}
-                      className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${selectedUsersForBulk.includes(user.id) ? "bg-primary/5" : ""}`}
-                      onClick={() => toggleUserSelection(user.id)}
-                    >
-                      <td className="px-6 py-4">
-                        <div
-                          className={`w-5 h-5 rounded border flex items-center justify-center ${selectedUsersForBulk.includes(user.id) ? "bg-primary border-primary text-white" : "border-slate-300 dark:border-slate-600"}`}
-                        >
-                          {selectedUsersForBulk.includes(user.id) && (
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 font-bold">{user.name}</td>
-                      <td className="px-6 py-4 text-slate-500">{user.email}</td>
-                      <td className="px-6 py-4">
-                        <StatusBadge status={user.status} />
-                      </td>
-                      <td className="px-6 py-4 font-mono">
-                        ${user.balance.toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
+      {activeTab === "funds" && <FundManagementTab />}
 
       {/* --- AUDIT LOGS TAB --- */}
       {activeTab === "audit" && <AuditLogsTab />}
 
       {/* --- RECONCILIATION TAB --- */}
-      {activeTab === "settings" && (
-        <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
-          {/* Secondary Navigation */}
-          <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl w-full sm:w-fit overflow-x-auto shadow-inner">
-            <button
-              onClick={() => setReconActiveTab("overview")}
-              className={`px-4 py-2 rounded-lg font-bold text-sm transition-colors whitespace-nowrap ${reconActiveTab === "overview" ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}
-            >
-              Overview
-            </button>
-            <button
-              onClick={() => setReconActiveTab("users")}
-              className={`px-4 py-2 rounded-lg font-bold text-sm transition-colors whitespace-nowrap ${reconActiveTab === "users" ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}
-            >
-              User Discrepancies
-            </button>
-            <button
-              onClick={() => setReconActiveTab("reports")}
-              className={`px-4 py-2 rounded-lg font-bold text-sm transition-colors whitespace-nowrap ${reconActiveTab === "reports" ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}
-            >
-              Reports
-            </button>
-            <button
-              onClick={() => setReconActiveTab("setup")}
-              className={`px-4 py-2 rounded-lg font-bold text-sm transition-colors whitespace-nowrap ${reconActiveTab === "setup" ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}
-            >
-              Setup & Jobs
-            </button>
-          </div>
-
-          {reconActiveTab === "overview" && (
-            <div className="space-y-6 animate-in fade-in">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm col-span-2">
-                  <div className="flex items-center justify-between mb-6">
-                    <div>
-                      <h3 className="text-lg font-bold">Ledger vs. Provider</h3>
-                      <p className="text-slate-500 text-sm">
-                        System balances versus payment gateway accounts
-                      </p>
-                    </div>
-                    <button className="bg-primary hover:bg-primary-light text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-colors shadow-lg shadow-primary/20">
-                      <Activity className="w-4 h-4" /> Run Reconciliation
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="p-4 rounded-xl border-2 border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 text-blue-600 rounded-full flex items-center justify-center">
-                          <Wallet className="w-6 h-6" />
-                        </div>
-                        <div>
-                          <p className="font-bold text-slate-900 dark:text-white">
-                            Paystack Gateway
-                          </p>
-                          <p className="text-sm text-slate-500">
-                            Last synced: 2 minutes ago
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="flex items-center gap-2 justify-end mb-1">
-                          <span className="text-sm font-semibold text-slate-600">
-                            Ledger: $450,210.50
-                          </span>
-                          <span className="text-sm text-slate-300">|</span>
-                          <span className="text-sm font-semibold text-green-600">
-                            Actual: $450,210.50
-                          </span>
-                        </div>
-                        <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide bg-green-100 text-green-700">
-                          MATCHED
-                        </span>
-                      </div>
-                    </div>
-                    <div className="p-4 rounded-xl border-2 border-red-100 dark:border-red-900/20 bg-red-50/50 dark:bg-red-900/10 flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 bg-slate-100 dark:bg-slate-800 text-slate-600 rounded-full flex items-center justify-center">
-                          <CreditCard className="w-6 h-6" />
-                        </div>
-                        <div>
-                          <p className="font-bold text-slate-900 dark:text-white">
-                            Fidelity Bank Settlement
-                          </p>
-                          <p className="text-sm text-slate-500">
-                            Last synced: 1 hour ago
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="flex items-center gap-2 justify-end mb-1">
-                          <span className="text-sm font-semibold text-slate-600">
-                            Ledger: $120,500.00
-                          </span>
-                          <span className="text-sm text-slate-300">|</span>
-                          <span className="text-sm font-semibold text-red-600">
-                            Actual: $120,450.00
-                          </span>
-                        </div>
-                        <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide bg-red-100 text-red-700">
-                          DISCREPANCY ($-50.00)
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col">
-                  <h3 className="text-lg font-bold mb-2">
-                    Reconciliation Alerts
-                  </h3>
-                  <p className="text-slate-500 text-sm mb-6">
-                    Review flagged items needing attention.
-                  </p>
-
-                  <div className="flex-1 space-y-4">
-                    <div className="border border-slate-100 dark:border-slate-800 rounded-xl p-4">
-                      <div className="flex items-start gap-3">
-                        <AlertTriangle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
-                        <div>
-                          <p className="font-bold text-sm text-slate-900 dark:text-white mb-1">
-                            Missing Settlement
-                          </p>
-                          <p className="text-xs text-slate-500 mb-3">
-                            TX-8923 ($50.00) from Fidelity Bank is missing in
-                            external records.
-                          </p>
-                          <button className="text-xs font-bold text-primary hover:text-primary-light transition-colors">
-                            Review Details &rarr;
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="border border-slate-100 dark:border-slate-800 rounded-xl p-4">
-                      <div className="flex items-start gap-3">
-                        <HistoryIcon className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
-                        <div>
-                          <p className="font-bold text-sm text-slate-900 dark:text-white mb-1">
-                            Stale Pending Funds
-                          </p>
-                          <p className="text-xs text-slate-500 mb-3">
-                            12 incoming transfers have been pending for &gt; 48
-                            hours.
-                          </p>
-                          <button className="text-xs font-bold text-primary hover:text-primary-light transition-colors">
-                            Investigate &rarr;
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h3 className="text-lg font-bold">Ledger vs. Users</h3>
-                    <p className="text-slate-500 text-sm">
-                      System total ledger balance versus sum of all user account
-                      balances
-                    </p>
-                  </div>
-                  <button className="bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-colors">
-                    <Activity className="w-4 h-4" /> Run Ledger Audit
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                    <p className="text-sm text-slate-500 mb-1">
-                      Total System Ledger
-                    </p>
-                    <p className="text-2xl font-bold text-slate-900 dark:text-white">
-                      $1,250,500.00
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                    <p className="text-sm text-slate-500 mb-1">
-                      Sum of User Balances
-                    </p>
-                    <p className="text-2xl font-bold text-slate-900 dark:text-white">
-                      $1,250,500.00
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-xl border-2 border-green-100 dark:border-green-900/20 bg-green-50/50 dark:bg-green-900/10 flex flex-col justify-center items-center">
-                    <p className="text-sm font-bold text-green-600 mb-1 uppercase tracking-wider">
-                      Status
-                    </p>
-                    <span className="inline-block px-3 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                      PERFECT MATCH
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-                <div className="p-6 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                  <h3 className="text-lg font-bold">Unresolved Transactions</h3>
-                  <button className="text-sm font-bold text-primary hover:text-primary-light">
-                    View All
-                  </button>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 uppercase font-bold text-[10px] tracking-widest">
-                      <tr>
-                        <th className="px-6 py-4">TX ID</th>
-                        <th className="px-6 py-4">GATEWAY</th>
-                        <th className="px-6 py-4">ISSUE</th>
-                        <th className="px-6 py-4">AMOUNT</th>
-                        <th className="px-6 py-4 text-right">ACTION</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                        <td className="px-6 py-4 font-mono text-xs">TX-8923</td>
-                        <td className="px-6 py-4 font-bold text-slate-900 dark:text-white">
-                          Fidelity Bank
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="text-red-500 bg-red-50 px-2 py-1 rounded text-xs font-semibold">
-                            Not Found Externally
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 font-bold">$50.00</td>
-                        <td className="px-6 py-4 text-right">
-                          <button className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition-colors">
-                            Resolve
-                          </button>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                        <td className="px-6 py-4 font-mono text-xs">TX-9104</td>
-                        <td className="px-6 py-4 font-bold text-slate-900 dark:text-white">
-                          Paystack
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="text-yellow-600 bg-yellow-50 px-2 py-1 rounded text-xs font-semibold">
-                            Amount Mismatch
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 font-bold">$250.00</td>
-                        <td className="px-6 py-4 text-right">
-                          <button className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition-colors">
-                            Resolve
-                          </button>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {reconActiveTab === "users" && (
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden animate-in fade-in">
-              <div className="p-6 border-b border-slate-200 dark:border-slate-800 md:flex items-center justify-between gap-4 space-y-4 md:space-y-0">
-                <div>
-                  <h3 className="text-lg font-bold">
-                    User Account Reconciliations
-                  </h3>
-                  <p className="text-slate-500 text-sm">
-                    Discrepancy reports between internal ledger and individual
-                    users
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <Search className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder="Search users..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full md:w-64 pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-800 border-none rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none"
-                    />
-                  </div>
-                  <button className="p-2 border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
-                    <Filter className="w-5 h-5 text-slate-600 dark:text-slate-400" />
-                  </button>
-                </div>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 uppercase font-bold text-[10px] tracking-widest">
-                    <tr>
-                      <th
-                        className="px-6 py-4 cursor-pointer hover:text-slate-700 dark:hover:text-slate-300"
-                        onClick={() =>
-                          setReconUserSort({
-                            key: "name",
-                            order:
-                              reconUserSort.key === "name" &&
-                              reconUserSort.order === "asc"
-                                ? "desc"
-                                : "asc",
-                          })
-                        }
-                      >
-                        User{" "}
-                        <ChevronDown
-                          className={`inline w-3 h-3 transition-transform ${reconUserSort.key === "name" && reconUserSort.order === "desc" ? "rotate-180" : ""}`}
-                        />
-                      </th>
-                      <th
-                        className="px-6 py-4 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-300"
-                        onClick={() =>
-                          setReconUserSort({
-                            key: "ledgerBalance",
-                            order:
-                              reconUserSort.key === "ledgerBalance" &&
-                              reconUserSort.order === "asc"
-                                ? "desc"
-                                : "asc",
-                          })
-                        }
-                      >
-                        Ledger Balance{" "}
-                        <ChevronDown
-                          className={`inline w-3 h-3 transition-transform ${reconUserSort.key === "ledgerBalance" && reconUserSort.order === "desc" ? "rotate-180" : ""}`}
-                        />
-                      </th>
-                      <th
-                        className="px-6 py-4 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-300"
-                        onClick={() =>
-                          setReconUserSort({
-                            key: "actualBalance",
-                            order:
-                              reconUserSort.key === "actualBalance" &&
-                              reconUserSort.order === "asc"
-                                ? "desc"
-                                : "asc",
-                          })
-                        }
-                      >
-                        Actual Balance{" "}
-                        <ChevronDown
-                          className={`inline w-3 h-3 transition-transform ${reconUserSort.key === "actualBalance" && reconUserSort.order === "desc" ? "rotate-180" : ""}`}
-                        />
-                      </th>
-                      <th
-                        className="px-6 py-4 text-right cursor-pointer hover:text-slate-700 dark:hover:text-slate-300"
-                        onClick={() =>
-                          setReconUserSort({
-                            key: "discrepancy",
-                            order:
-                              reconUserSort.key === "discrepancy" &&
-                              reconUserSort.order === "asc"
-                                ? "desc"
-                                : "asc",
-                          })
-                        }
-                      >
-                        Discrepancy{" "}
-                        <ChevronDown
-                          className={`inline w-3 h-3 transition-transform ${reconUserSort.key === "discrepancy" && reconUserSort.order === "desc" ? "rotate-180" : ""}`}
-                        />
-                      </th>
-                      <th className="px-6 py-4 text-center">Status</th>
-                      <th className="px-6 py-4 text-right">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {sortedUserReconciliations.map((user) => (
-                      <tr
-                        key={user.id}
-                        className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
-                      >
-                        <td className="px-6 py-4 font-bold text-slate-900 dark:text-white">
-                          <div>{user.name}</div>
-                          <div className="font-mono text-[10px] text-slate-400 font-normal">
-                            {user.id.substring(0, 8)}...
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-right font-medium text-slate-600 dark:text-slate-300">
-                          $
-                          {user.ledgerBalance.toLocaleString("en-US", {
-                            minimumFractionDigits: 2,
-                          })}
-                        </td>
-                        <td className="px-6 py-4 text-right font-medium text-slate-600 dark:text-slate-300">
-                          $
-                          {user.actualBalance.toLocaleString("en-US", {
-                            minimumFractionDigits: 2,
-                          })}
-                        </td>
-                        <td
-                          className={`px-6 py-4 text-right font-bold ${user.discrepancy === 0 ? "text-slate-400" : user.discrepancy > 0 ? "text-green-600" : "text-red-500"}`}
-                        >
-                          {user.discrepancy === 0
-                            ? "-"
-                            : `${user.discrepancy > 0 ? "+" : ""}$${user.discrepancy.toLocaleString("en-US", { minimumFractionDigits: 2 })}`}
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          {user.discrepancy === 0 ? (
-                            <span className="inline-block px-2 py-1 rounded text-[10px] font-bold bg-green-100 text-green-700">
-                              MATCHED
-                            </span>
-                          ) : (
-                            <span className="inline-block px-2 py-1 rounded text-[10px] font-bold bg-red-100 text-red-700">
-                              FLAGGED
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedReconUser(user);
-                            }}
-                            className="p-2 text-slate-400 hover:text-primary transition-colors tooltip-trigger relative group"
-                          >
-                            <Activity className="w-4 h-4" />
-                            <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-                              Audit User
-                            </span>
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {reconActiveTab === "reports" && (
-            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm animate-in fade-in mb-6">
-              <h3 className="text-xl font-bold mb-6">Reconciliation Exports</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-                <div className="border border-slate-200 dark:border-slate-800 rounded-xl p-5 hover:border-primary/50 transition-colors cursor-pointer group">
-                  <div className="w-12 h-12 bg-primary/10 text-primary rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                    <Download className="w-6 h-6" />
-                  </div>
-                  <h4 className="font-bold text-slate-900 dark:text-white mb-2">
-                    Global Reconciliation Report
-                  </h4>
-                  <p className="text-sm text-slate-500 mb-4">
-                    Complete audit trail of all ledger vs provider matchings and
-                    discrepancies.
-                  </p>
-                  <div className="flex items-center text-xs font-bold text-primary">
-                    Download CSV &rarr;
-                  </div>
-                </div>
-                <div className="border border-slate-200 dark:border-slate-800 rounded-xl p-5 hover:border-primary/50 transition-colors cursor-pointer group">
-                  <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 text-blue-600 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                    <Users className="w-6 h-6" />
-                  </div>
-                  <h4 className="font-bold text-slate-900 dark:text-white mb-2">
-                    User Discrepancy Report
-                  </h4>
-                  <p className="text-sm text-slate-500 mb-4">
-                    Export list of all accounts currently flagged with ledger
-                    mismatches.
-                  </p>
-                  <div className="flex items-center text-xs font-bold text-blue-600">
-                    Download CSV &rarr;
-                  </div>
-                </div>
-              </div>
-
-              <h4 className="font-bold text-lg mb-4">
-                Generate Account specific report
-              </h4>
-              <div className="flex flex-col md:flex-row gap-4 max-w-2xl">
-                <input
-                  type="text"
-                  id="accountReportQuery"
-                  placeholder="Enter User Email or ID..."
-                  className="flex-1 px-4 py-3 bg-slate-50 dark:bg-slate-800 border-none rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none text-slate-900 dark:text-white"
-                />
-                <button
-                  onClick={() => {
-                    const query = (
-                      (
-                        document.getElementById(
-                          "accountReportQuery",
-                        ) as HTMLInputElement
-                      )?.value || ""
-                    )
-                      .toLowerCase()
-                      .trim();
-                    if (!query)
-                      return showToast(
-                        "error",
-                        "Please enter a user ID or email",
-                      );
-                    let usr = users.find(
-                      (u) =>
-                        u.email.toLowerCase() === query ||
-                        u.id.toLowerCase() === query,
-                    );
-                    if (!usr) {
-                      usr = {
-                        id: `USR-${Date.now().toString().slice(-4)}`,
-                        name: query.includes("@") ? query.split("@")[0] : query,
-                        email: query.includes("@")
-                          ? query
-                          : `${query}@example.com`,
-                        status: "active",
-                        role: "user",
-                        joinedDate: new Date().toISOString().split("T")[0],
-                        avatarSeed: query,
-                        balance: 0,
-                      };
-                    }
-                    handleDownloadStatement(usr);
-                  }}
-                  className="px-6 py-3 bg-slate-900 dark:bg-slate-700 text-white rounded-xl font-bold text-sm shadow-lg hover:bg-slate-800 dark:hover:bg-slate-600 transition-colors flex items-center justify-center gap-2"
-                >
-                  <Search className="w-4 h-4" /> Find & Export
-                </button>
-              </div>
-            </div>
-          )}
-
-          {reconActiveTab === "reports" && <AdminReconciliationScreen />}
-
-          {reconActiveTab === "setup" && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in">
-              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-                <h3 className="text-xl font-bold mb-2">Job Configuration</h3>
-                <p className="text-sm text-slate-500 mb-6">
-                  Setup scheduled reconciliation jobs to automatically compare
-                  records.
-                </p>
-
-                <div className="space-y-5">
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">
-                      Reconciliation Frequency
-                    </label>
-                    <select className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none cursor-pointer">
-                      <option>Hourly</option>
-                      <option>Daily at 00:00 UTC</option>
-                      <option>Weekly on Sunday</option>
-                      <option>Manual Only</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">
-                      Tolerance Threshold
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-bold">
-                        $
-                      </span>
-                      <input
-                        type="number"
-                        defaultValue="0.00"
-                        className="w-full pl-8 pr-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none"
-                      />
-                    </div>
-                    <p className="text-xs text-slate-500 mt-2">
-                      Discrepancies below this amount will not trigger alerts.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">
-                      Default Lookback Date Range
-                    </label>
-                    <select className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:ring-2 focus:ring-primary outline-none cursor-pointer">
-                      <option>Last 24 Hours</option>
-                      <option>Last 7 Days</option>
-                      <option>Last 30 Days</option>
-                      <option>All Time</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col">
-                <h3 className="text-xl font-bold mb-2">Account Mapping</h3>
-                <p className="text-sm text-slate-500 mb-6">
-                  Map internal system accounts to external provider endpoints.
-                </p>
-
-                <div className="flex-1 space-y-4">
-                  <div className="flex items-center justify-between p-4 border border-slate-200 dark:border-slate-800 rounded-xl">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center font-bold text-xs">
-                        PS
-                      </div>
-                      <div>
-                        <p className="font-bold text-sm">
-                          Paystack Nigerian Naira
-                        </p>
-                        <p className="text-xs text-slate-500">
-                          API Key Configured
-                        </p>
-                      </div>
-                    </div>
-                    <button className="text-primary text-sm font-bold">
-                      Edit
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between p-4 border border-slate-200 dark:border-slate-800 rounded-xl">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-lg flex items-center justify-center font-bold text-xs">
-                        ST
-                      </div>
-                      <div>
-                        <p className="font-bold text-sm">Stripe USD Sandbox</p>
-                        <p className="text-xs text-slate-500">Webhook Active</p>
-                      </div>
-                    </div>
-                    <button className="text-primary text-sm font-bold">
-                      Edit
-                    </button>
-                  </div>
-                  <button className="w-full py-4 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl text-slate-500 hover:text-slate-800 dark:hover:text-white hover:border-slate-400 transition-colors font-bold text-sm">
-                    + Add Gateway Mapping
-                  </button>
-                </div>
-                <button className="w-full py-3 bg-primary text-white font-bold rounded-xl hover:bg-primary-light transition-colors mt-6 shadow-lg shadow-primary/20">
-                  Save Configuration
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {activeTab === "settings" && <AdminReconciliationScreen />}
 
       {/* Reconciliation Detail Modal */}
       {selectedReconUser && (
