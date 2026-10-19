@@ -47,7 +47,6 @@ export async function runTransferConsumer() {
       );
 
       if (hasNoCommits) {
-        logger.info("Fresh consumer group — seeking all partitions to latest");
         const topicOffsets = await admin.fetchTopicOffsets(
           TOPICS.TRANSFER_EVENTS,
         );
@@ -58,10 +57,8 @@ export async function runTransferConsumer() {
             partition,
             offset: high,
           });
-          logger.info(`Seeked partition ${partition} to offset ${high}`);
         }
       } else {
-        logger.info("Existing consumer group — using committed offsets");
       }
 
       isConsumerReady = true;

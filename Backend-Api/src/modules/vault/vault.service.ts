@@ -15,7 +15,11 @@ import {
 } from "@/modules/transfer/transfer.interface";
 import BadRequestError from "@/shared/errors/badRequest";
 import { NotFoundError } from "@/shared/errors/notFoundError";
-import { generateEventId, generateVaultId } from "@/shared/utils/id.generator";
+import {
+  generateAccrualId,
+  generateEventId,
+  generateVaultId,
+} from "@/shared/utils/id.generator";
 import mongoose, { Types } from "mongoose";
 import { AuditAction, AuditStatus } from "../audit/audit.interface";
 import User from "../auth/authmodel";
@@ -27,6 +31,12 @@ import {
 import TransactionBuilder from "../ledger/ledger.transaction.builder";
 import { Wallet } from "../wallet/wallet.model";
 import vaultModel from "./vault.model";
+import { logger } from "@/shared/utils/logger";
+import {
+  FeeAccrual,
+  FeeAccrualStatus,
+  FeeCategory,
+} from "@/modules/fee/fee.accrual.model";
 
 const DEFAULT_PENALTY_BASIS_POINTS = {
   FLEXIBLE: 0,
@@ -200,14 +210,14 @@ class VaultService {
         throw new BadRequestError("Insufficient vault balance");
       }
 
-      // ─── Lock vault for concurrency ───────────────────────────────────────
+      // ─── Lock vault for concurrency
       const vaultLocked = await lockVaultToPreventConcurrency(
         vault._id,
         session,
       );
       if (!vaultLocked) throw new BadRequestError("Vault is busy, try again");
 
-      // ─── Load user main wallet ────────────────────────────────────────────
+      // ─── Load user main wallet
       const mainWlt = await mainWallet(
         user.userId,
         vault.currency,
@@ -217,7 +227,7 @@ class VaultService {
 
       if (!mainWlt) throw new NotFoundError("Main wallet not found");
 
-      // ─── Load ledger accounts ─────────────────────────────────────────────
+      // ─── Load ledger accounts
       const vaultLedger = await LedgerAccount.findById(
         vault.ledgerAccountId,
       ).session(session);
@@ -228,10 +238,10 @@ class VaultService {
       ).session(session);
       if (!mainLedger) throw new NotFoundError("Main wallet ledger not found");
 
-      // ─── Calculate penalty ────────────────────────────────────────────────
+      // ─── Calculate penalty
       const penaltyInfo = this.calculatePenalty(vault, amount);
       const userReceives = amount - penaltyInfo.penaltyAmount;
-      const treasuryReceives = penaltyInfo.penaltyAmount;
+      const revenueReceives = penaltyInfo.penaltyAmount;
 
       const transactionRef = `VAULT_WITHDRAW_${generateEventId()}`;
 
@@ -248,22 +258,20 @@ class VaultService {
         nature: "DEBIT",
       });
 
-      if (treasuryReceives > 0) {
+      if (revenueReceives > 0) {
         // ─── With penalty — three legs ──────────────────────────────────────
-        const treasuryWallet = await Wallet.findOne({
-          type: LedgerAccountType.SYSTEM_TREASURY,
+        const revenueWallet = await Wallet.findOne({
+          type: LedgerAccountType.SYSTEM_REVENUE,
           currency: vault.currency,
         }).session(session);
 
-        if (!treasuryWallet)
-          throw new NotFoundError("Treasury wallet not found");
+        if (!revenueWallet) throw new NotFoundError("Revenue wallet not found");
 
-        const treasuryLedger = await LedgerAccount.findById(
-          treasuryWallet.ledgerAccountId,
+        const revenueLedger = await LedgerAccount.findById(
+          revenueWallet.ledgerAccountId,
         ).session(session);
 
-        if (!treasuryLedger)
-          throw new NotFoundError("Treasury ledger not found");
+        if (!revenueLedger) throw new NotFoundError("Revenue ledger not found");
 
         // Credit user
         builder.addCredit({
@@ -279,8 +287,8 @@ class VaultService {
         // Credit treasury (penalty)
         builder.addCredit({
           transactionRef,
-          ledgerAccountId: treasuryLedger._id,
-          amount: treasuryReceives,
+          ledgerAccountId: revenueLedger._id,
+          amount: revenueReceives,
           currency: vault.currency,
           referenceId: vaultId,
           referenceType: "VAULT_PENALTY",
@@ -289,10 +297,10 @@ class VaultService {
 
         await builder.commit(session);
 
-        // Update treasury wallet balance
+        // Update revenue wallet balance
         await Wallet.findOneAndUpdate(
-          { _id: treasuryWallet._id },
-          { $inc: { availableBalance: treasuryReceives } },
+          { _id: revenueWallet._id },
+          { $inc: { availableBalance: revenueReceives }, version: 1 },
           { session },
         );
       } else {
@@ -320,7 +328,7 @@ class VaultService {
       // ─── Update vault balance ─────────────────────────────────────────────
       await vaultModel.updateOne(
         { _id: vault._id },
-        { $inc: { currentBalanceMinor: -amount } },
+        { $inc: { currentBalanceMinor: -amount }, version: 1 },
         { session },
       );
 
@@ -337,7 +345,7 @@ class VaultService {
             userId: user.userId,
             amount,
             userReceives,
-            penaltyAmount: treasuryReceives,
+            penaltyAmount: revenueReceives,
             penaltyApplied: penaltyInfo.penaltyApplied,
             penaltyReason: penaltyInfo.reason,
             newBalance: vault.currentBalanceMinor - amount,
@@ -355,6 +363,33 @@ class VaultService {
 
       await session.commitTransaction();
 
+      if (revenueReceives > 0) {
+        try {
+          await FeeAccrual.create({
+            accrualId: generateAccrualId(),
+            transactionRef,
+            feeTransactionRef: `${transactionRef}-PENALTY`,
+            payerUserId: user.userId,
+            payerName: user.name,
+            category: FeeCategory.VAULT_TRANSFER,
+            amount: revenueReceives,
+            currency: vault.currency,
+            transitAccount: "sys_fees_pool",
+            status: FeeAccrualStatus.ACCRUED,
+          });
+        } catch (err: any) {
+          if (err.code !== 11000) {
+            logger.warn(
+              "FeeAccrual creation failed after vault penalty withdrawal",
+              {
+                transactionRef,
+                error: err.message,
+              },
+            );
+          }
+        }
+      }
+
       // 6. Mark idempotency completed — AFTER commit
       await markCompleted(dto.idempotencyKey, transactionRef, {
         transactionId: transactionRef,
@@ -368,7 +403,7 @@ class VaultService {
         vaultId,
         amountWithdrawn: amount,
         penaltyApplied: penaltyInfo.penaltyApplied,
-        penaltyAmount: treasuryReceives,
+        penaltyAmount: revenueReceives,
         penaltyReason: penaltyInfo.reason,
         amountReceived: userReceives,
         newVaultBalance: vault.currentBalanceMinor - amount,
@@ -455,7 +490,7 @@ class VaultService {
     return { penaltyApplied: false, penaltyAmount: 0, reason: "UNKNOWN" };
   }
 
-  // // ─── Get vault ─────────────────────────────────────────────────────────────
+  // // ─── Get vault
   public async getVault(userId: string, vaultId: string) {
     const user = await User.findOne({ userId });
     if (!user) throw new NotFoundError("User not found");
@@ -472,7 +507,7 @@ class VaultService {
     return vault;
   }
 
-  // // ─── List user vaults ──────────────────────────────────────────────────────
+  // // ─── List user vaults
   public async getUserVaults(userId: string) {
     const user = await User.findOne({ userId });
     if (!user) throw new NotFoundError("User not found");
@@ -480,7 +515,7 @@ class VaultService {
     return vaultModel.find({ userId: user._id }).sort({ createdAt: -1 }).lean();
   }
 
-  // // ─── Close vault ───────────────────────────────────────────────────────────
+  // // ─── Close vault
   public async closeVault(params: {
     userId: string;
     vaultId: string;
@@ -492,6 +527,9 @@ class VaultService {
     // Withdraw everything (penalty applies if locked)
     const vault = await vaultModel.findOne({ vaultId });
     if (!vault) throw new NotFoundError("Vault not found");
+
+    if (vault.status === "CANCELLED")
+      throw new BadRequestError("Vault already closed");
 
     const dto: vaultCloseRequest = {
       userId,
@@ -564,6 +602,74 @@ class VaultService {
         : "0%",
       netAmount: amount - penaltyInfo.penaltyAmount,
       vaultId,
+    };
+  }
+
+  public async editVault(params: {
+    userId: string;
+    vaultId: string;
+    title?: string;
+    targetAmountMinor?: number;
+    context: IRequestContext;
+  }) {
+    const { userId, vaultId, title, targetAmountMinor, context } = params;
+
+    const vault = await vaultModel.findOne({
+      vaultId: vaultId,
+      userPublicId: userId,
+    });
+
+    if (!vault) {
+      throw new NotFoundError("Vault not found");
+    }
+
+    // targetAmount is only valid for TARGET vaults
+    if (targetAmountMinor !== undefined && vault.vaultType !== "TARGET") {
+      throw new BadRequestError(
+        `targetAmount can only be set for TARGET vaults`,
+      );
+    }
+
+    // New target amount cannot be less than already-contributed balance
+    if (
+      targetAmountMinor !== undefined &&
+      Number(targetAmountMinor) < vault.currentBalanceMinor
+    ) {
+      throw new BadRequestError(
+        `targetAmount cannot be lower than current vault balance of ${vault.currentBalanceMinor}`,
+      );
+    }
+
+    const updates: Record<string, unknown> = {};
+    if (title) updates.title = title;
+
+    if (targetAmountMinor !== undefined)
+      updates.targetAmountMinor = Number(targetAmountMinor);
+
+    const updatedVault = await vaultModel.findOneAndUpdate(
+      { vaultId: vaultId },
+      { $set: { ...updates, updatedAt: new Date() } },
+      { new: true },
+    );
+
+    await emitOutboxEvent({
+      topic: "vault.events",
+      eventId: generateEventId(),
+      eventType: AuditAction.EDIT_VAULT,
+      action: AuditAction.EDIT_VAULT,
+      status: AuditStatus.PENDING,
+      payload: {
+        vaultId,
+      },
+      aggregateType: "VAULT",
+      aggregateId: vaultId,
+      version: 1,
+      context,
+    });
+
+    return {
+      ok: true,
+      data: updatedVault,
     };
   }
 }

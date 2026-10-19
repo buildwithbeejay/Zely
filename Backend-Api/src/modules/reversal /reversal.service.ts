@@ -22,13 +22,15 @@ import {
 import { IRequestContext } from "@/config/interfaces/request.interface";
 import { emitOutboxEvent } from "@/infrastructure/helpers/emit.audit.helper";
 import User from "@/modules/auth/authmodel";
+import { FeeAccrual, FeeAccrualStatus } from "@/modules/fee/fee.accrual.model";
 import FundingService from "@/modules/fee/funding/funding.service";
 import BadRequestError from "@/shared/errors/badRequest";
 import { NotFoundError } from "@/shared/errors/notFoundError";
 import { generateEventId } from "@/shared/utils/id.generator";
 import { logger } from "@/shared/utils/logger";
 import { AuditAction, AuditStatus } from "../audit/audit.interface";
-import { FeeAccrual, FeeAccrualStatus } from "@/modules/fee/fee.accrual.model";
+import { recordAdminActivity } from "@/modules/admin/admin.activity.helper";
+import { AdminActivityType } from "@/modules/admin/admin.activity.model";
 
 class ReversalService {
   // ─── Scenario 1: Admin reversal of completed transfer ──────────────────────
@@ -394,6 +396,15 @@ class ReversalService {
 
       await session.commitTransaction();
       committed = true;
+
+      await recordAdminActivity({
+        adminUserId: adminPublicId,
+        adminEmail: context.email ?? "",
+        type: AdminActivityType.TRANSFER_REVERSED,
+        description: `Reversed transfer ${originalTransactionRef} — ${reason}`,
+        targetUserId: senderWallet.userPublicId,
+        metadata: { reversalId: reversal.reversalId, reverseFee, notes },
+      });
 
       logger.info("✅ Transfer reversal completed", {
         reversalId: reversal.reversalId,

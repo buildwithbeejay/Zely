@@ -27,12 +27,11 @@ import {
 import { Response, Router } from "express";
 import { StatusCodes } from "http-status-codes";
 import asyncWrapper from "shared/middleware/async.wrapper";
-import { isAdmin, requireAuth } from "shared/middleware/auth.middleware";
+import { requireAuth } from "shared/middleware/auth.middleware";
 import validateRequest from "shared/middleware/validation.middleware";
 import { UserRole } from "./authinterface";
 import authService from "./authservice";
 import validationSchema from "./authvalidation";
-import authvalidation from "./authvalidation";
 
 class AuthController implements Controller {
   public path = "/auth";

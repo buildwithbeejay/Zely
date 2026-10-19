@@ -2,13 +2,21 @@ import { IRequestContext } from "@/config/interfaces/request.interface";
 import { emitOutboxEvent } from "@/infrastructure/helpers/emit.audit.helper";
 import { Account } from "@/modules/account/account.model";
 import {
+  FeeAccrual,
+  FeeAccrualStatus,
+  FeeCategory,
+} from "@/modules/fee/fee.accrual.model";
+import {
   commitTransactionLimits,
   enforceReceiverBalanceCap,
   enforceTransactionLimits,
+  Reservation,
   rollbackTransactionLimits,
 } from "@/modules/transactionLimit/transactionLimit.service";
+import { checkAndAutoRecoverWallet } from "@/modules/wallet/wallet.recovery";
 import BadRequestError from "@/shared/errors/badRequest";
 import { NotFoundError } from "@/shared/errors/notFoundError";
+import { generateAccrualId } from "@/shared/utils/id.generator";
 import { logger } from "@/shared/utils/logger";
 import mongoose from "mongoose";
 import { AuditAction, AuditStatus } from "../audit/audit.interface";
@@ -42,15 +50,7 @@ import {
   internalTransferRequest,
   TransferRequestInput,
   vaultTransferRequest,
-  vaultWithrawalRequest,
 } from "./transfer.interface";
-import { checkAndAutoRecoverWallet } from "@/modules/wallet/wallet.recovery";
-import {
-  FeeAccrual,
-  FeeAccrualStatus,
-  FeeCategory,
-} from "@/modules/fee/fee.accrual.model";
-import { generateAccrualId } from "@/shared/utils/id.generator";
 
 class TransferService {
   public async p2pTransfer(
@@ -70,6 +70,7 @@ class TransferService {
 
     let senderWallet: WalletDocument | null = null;
     let receiverWallet: WalletDocument | null = null;
+    let reservation: Reservation | null = null;
 
     try {
       /** -------------------------
@@ -143,7 +144,7 @@ class TransferService {
       const senderTier = senderUser?.kycTier ?? KycTier.TIER_1;
       const receiverTier = receiverUser?.kycTier ?? KycTier.TIER_1;
 
-      const tier = await enforceTransactionLimits({
+      const limitResult = await enforceTransactionLimits({
         userId: senderAccount.userId.toString(),
         userPublicId: dto.senderId,
         kycTier: senderTier,
@@ -152,8 +153,8 @@ class TransferService {
         senderWallet,
         session,
       });
-
-      console.log(`Before config: ${tier}`);
+      reservation = limitResult.reservation;
+      const tier = limitResult.kycTier;
 
       const config = await TransactionLimitConfig.findOne({ tier: tier });
 
@@ -302,6 +303,7 @@ class TransferService {
       );
 
       await session.commitTransaction();
+      committed = true;
 
       if (fee > 0) {
         try {
@@ -331,11 +333,21 @@ class TransferService {
       }
 
       // Commit limits to Redis after successful transaction
-      await commitTransactionLimits({
-        userPublicId: dto.senderId,
-        amount: dto.amount,
-        currency: dto.currency,
-      });
+      try {
+        await commitTransactionLimits({
+          userPublicId: dto.senderId,
+          amount: dto.amount,
+          currency: dto.currency,
+          reservation,
+        });
+      } catch (err: any) {
+        logger.error("Limit usage commit failed after successful transfer", {
+          transactionRef: result.transactionRef,
+          userPublicId: dto.senderId,
+          amount: dto.amount,
+          message: err?.message,
+        });
+      }
 
       return {
         result,
@@ -344,20 +356,29 @@ class TransferService {
     } catch (e) {
       if (!committed) {
         try {
-          // The session/transaction may have already been closed by the driver
-          if (session.inTransaction()) {
-            await session.abortTransaction();
+          if (session.inTransaction()) await session.abortTransaction();
+        } catch (abortErr: any) {
+          logger.warn("Failed to abort transaction (may already be closed)", {
+            message: abortErr?.message,
+          });
+        }
+
+        // Give back the reservation even if the abort above threw.
+        // If enforce itself failed, it already cleaned up and `reservation` is null.
+        if (reservation) {
+          try {
             await rollbackTransactionLimits({
               userPublicId: dto.senderId,
               amount: dto.amount,
               currency: dto.currency,
+              reservation,
+            });
+          } catch (rbErr: any) {
+            logger.error("Limit rollback failed", {
+              userPublicId: dto.senderId,
+              message: rbErr?.message,
             });
           }
-        } catch (abortErr) {
-          // Log but don't rethrow — the original error is what matters
-          logger.warn("Failed to abort transaction (may already be closed)", {
-            abortErr,
-          });
         }
       }
       throw e;

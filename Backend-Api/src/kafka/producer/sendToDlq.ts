@@ -25,6 +25,7 @@ export async function sendToDLQ(
             value: JSON.stringify(envelope),
             headers: {
               "x-error": error.message,
+              "x-error-type": error.name || "UNKNOWN",
               "x-failed-at": new Date().toISOString(),
               "x-retry-count": String(envelope.meta.retryCount ?? 0),
             },

@@ -65,17 +65,17 @@ export const lockVaultToPreventConcurrency = async (
   session: ClientSession,
 ) => {
   const now = new Date();
-  const lockExpiry = new Date(now.getTime() + 10_000); // 10s safety window
+  const lockExpiry = new Date(now.getTime() + 10_000);
 
   const res = await vaultModel.findOneAndUpdate(
     {
-      _id: vaultId._id,
-      $or: [{ locked: false }, { lockedUntil: { $lt: now } }],
+      _id: vaultId,
+      $or: [{ locked: false }, { concurrencyLockExpiry: { $lt: now } }],
     },
     {
       $set: {
         locked: true,
-        lockedUntil: lockExpiry,
+        concurrencyLockExpiry: lockExpiry,
       },
     },
     { session, new: true },
@@ -90,7 +90,7 @@ export const unlockVault = async (
 ) => {
   await vaultModel.updateOne(
     { _id: vaultId },
-    { $set: { locked: false, lockUntil: null } },
+    { $set: { locked: false, concurrencyLockExpiry: null } },
     { session },
   );
 };

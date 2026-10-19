@@ -8,6 +8,7 @@ import { EMAIL_QUEUE } from "../infrastructure/queues/email.queue";
 import { conn } from "./bullMq.config";
 import { config } from "@/config/index";
 import { configureResendBreaker } from "@/infrastructure/resilience/breakers/resend.breaker";
+import { quietBullErrors } from "@/infrastructure/queues/quiet-bull-errors";
 
 console.log("🔥 EMAIL WORKER FILE LOADED");
 
@@ -58,6 +59,7 @@ async function bootstrap(): Promise<void> {
   configureResendBreaker(workerRegistry);
 
   const emailQueueRef = new Queue(EMAIL_QUEUE, { connection });
+  quietBullErrors(emailQueueRef, "email");
 
   /** -------------------------
    * CONNECT TO MONGODB
@@ -347,6 +349,8 @@ async function bootstrap(): Promise<void> {
       removeOnFail: { count: 500 },
     },
   );
+
+  quietBullErrors(emailWorker, "email-worker");
 
   // ─── Queue depth polling ────────────────────────────────────────────────
   setInterval(async () => {

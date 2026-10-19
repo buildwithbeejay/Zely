@@ -28,7 +28,7 @@ export async function runReversalConsumer() {
   await reversalConsumer.connect();
 
   await reversalConsumer.subscribe({
-    topics: [TOPICS.REVERSAL_EVENTS, TOPICS.RECONCILIATION_EVENTS],
+    topics: [TOPICS.REVERSAL_EVENTS],
     fromBeginning: false,
   });
 

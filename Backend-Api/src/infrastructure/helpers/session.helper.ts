@@ -3,9 +3,62 @@ import { config } from "@/config/index";
 import { SessionModel } from "@/modules/sessions/session.model";
 import BadRequestError from "@/shared/errors/badRequest";
 import { logger } from "@/shared/utils/logger";
-import { UAParser } from "ua-parser-js"; // npm install ua-parser-js
+import { UAParser } from "ua-parser-js";
 import { v4 as uuidv4 } from "uuid";
 import redis from "../cache/redis.cli";
+
+const viaRedis = <T>(ctx: string, fn: () => Promise<T>, fallback: T) =>
+  redis.execute(fn, async () => fallback, ctx);
+
+// ioredis pipelines can return per-command errors without throwing.
+const assertPipeline = (results: [Error | null, unknown][] | null) => {
+  const failed = results?.find(([err]) => err);
+  if (failed) throw failed[0];
+};
+
+const purgeByPattern = (pattern: string) =>
+  redis.execute(
+    async () => {
+      const client = redis.getClient();
+      let cursor = "0";
+
+      do {
+        const [next, keys] = await client.scan(
+          cursor,
+          "MATCH",
+          pattern,
+          "COUNT",
+          500,
+        );
+
+        cursor = next;
+
+        if (keys.length) {
+          await client.del(...keys);
+        }
+      } while (cursor !== "0");
+
+      return true;
+    },
+    async () => false,
+    `purge:${pattern}`,
+  );
+
+// ─── Redis key helpers ──────────────────────────────────────────────
+
+// Stores the HASH of the latest refresh token for a device.
+// Do not use this key for access-token JTIs.
+const getRefreshLatestKey = (sub: string, deviceId: string) =>
+  `${config.redis.sessionLatestPrefix}${sub}:${deviceId}`;
+
+// Stores the JTI of the latest access token for a device.
+const getAccessJtiKey = (sub: string, deviceId: string) =>
+  `${config.redis.sessionAccessJtiPrefix}${sub}:${deviceId}`;
+
+const getDevicesKey = (sub: string) =>
+  `${config.redis.userDevicesPrefix}${sub}`;
+
+// ─── Store refresh token ────────────────────────────────────────────
 
 export const storeRefreshToken = async (
   rawToken: string,
@@ -19,26 +72,37 @@ export const storeRefreshToken = async (
 ): Promise<string> => {
   const h = hashToken(rawToken);
   const hashKey = `${config.redis.refreshTokenHashPrefix}${h}`;
-  const latestKey = `${config.redis.sessionLatestPrefix}${payload.sub}:${payload.deviceId}`;
-  const devicesKey = `${config.redis.userDevicesPrefix}${payload.sub}`;
+  const latestKey = getRefreshLatestKey(payload.sub, payload.deviceId);
+  const devicesKey = getDevicesKey(payload.sub);
 
   const now = Math.floor(Date.now() / 1000);
-  const ttl = Math.max(Number(payload.exp) - now, 0);
+  const ttl = Math.max(Number(payload.exp) - now, 1);
 
-  const pipeline = redis.getClient().pipeline();
+  await viaRedis(
+    "session:store",
+    async () => {
+      const results = await redis
+        .getClient()
+        .pipeline()
+        .set(hashKey, JSON.stringify(payload), "EX", ttl)
+        .set(latestKey, h, "EX", ttl)
+        .sadd(devicesKey, payload.deviceId)
+        .expire(devicesKey, ttl)
+        .exec();
 
-  pipeline.set(hashKey, JSON.stringify(payload), "EX", ttl);
-  pipeline.set(latestKey, h, "EX", ttl);
-  pipeline.sadd(devicesKey, payload.deviceId);
-  pipeline.expire(devicesKey, ttl);
-  await pipeline.exec();
+      assertPipeline(results);
+      return true;
+    },
+    false,
+  );
 
   return h;
 };
 
+// ─── Get refresh-token payload ──────────────────────────────────────
+
 export const getPayloadByRefreshToken = async (rawToken: string) => {
   const h = hashToken(rawToken);
-
   const hashKey = `${config.redis.refreshTokenHashPrefix}${h}`;
   const data = await redis.get(hashKey);
 
@@ -53,64 +117,110 @@ export const getPayloadByRefreshToken = async (rawToken: string) => {
   };
 };
 
-export const getLatestHashForDevice = async (sub: string, deviceId: string) => {
-  const lastestKey = `${config.redis.sessionLatestPrefix}${sub}:${deviceId}`;
+// ─── Get latest refresh-token hash ──────────────────────────────────
 
-  return await redis.get(lastestKey);
+export const getLatestHashForDevice = async (sub: string, deviceId: string) => {
+  return redis.get(getRefreshLatestKey(sub, deviceId));
 };
+
+// ─── Delete refresh token by its raw value ──────────────────────────
 
 export const deleteRefreshByHash = async (rawToken: string) => {
   const h = hashToken(rawToken);
-
-  const key = config.redis.refreshTokenHashPrefix + h;
+  const key = `${config.redis.refreshTokenHashPrefix}${h}`;
 
   await redis.delete(key);
 };
 
-export const revokeAllSessions = async (sub: string) => {
-  const devicesKey = `${config.redis.userDevicesPrefix}${sub}`;
+// ─── Revoke all sessions in Redis ───────────────────────────────────
 
-  const devicesId = await redis.getClient().smembers(devicesKey);
-  const pipeline = redis.getClient().pipeline();
+export const revokeAllSessions = async (
+  sub: string,
+  excludeDeviceId?: string,
+) => {
+  const devicesKey = getDevicesKey(sub);
 
-  for (const deviceId of devicesId) {
-    const latestKey = `${config.redis.sessionLatestPrefix}${sub}:${deviceId}`;
-    const h = await redis.get(latestKey);
+  await viaRedis(
+    "session:revokeAll",
+    async () => {
+      const client = redis.getClient();
+      const deviceIds = await client.smembers(devicesKey);
+      const pipeline = client.pipeline();
+      const revoked: string[] = [];
 
-    if (h) pipeline.del(config.redis.refreshTokenHashPrefix + h);
-    pipeline.del(latestKey);
-  }
+      for (const deviceId of deviceIds) {
+        if (deviceId === excludeDeviceId) continue;
 
-  pipeline.del(devicesKey);
+        const refreshLatestKey = getRefreshLatestKey(sub, deviceId);
+        const accessJtiKey = getAccessJtiKey(sub, deviceId);
 
-  await pipeline.exec();
+        const refreshHash = await client.get(refreshLatestKey);
+
+        if (refreshHash) {
+          pipeline.del(`${config.redis.refreshTokenHashPrefix}${refreshHash}`);
+        }
+
+        // Remove both kinds of per-device cache entries.
+        pipeline.del(refreshLatestKey);
+        pipeline.del(accessJtiKey);
+
+        revoked.push(deviceId);
+      }
+
+      if (excludeDeviceId) {
+        if (revoked.length) {
+          pipeline.srem(devicesKey, ...revoked);
+        }
+      } else {
+        pipeline.del(devicesKey);
+      }
+
+      assertPipeline(await pipeline.exec());
+      return true;
+    },
+    false,
+  );
 };
 
-// Revoke single device session
-export const revokeSession = async (sub: string, deviceId: string) => {
-  const latestKey = `${config.redis.sessionLatestPrefix}${sub}:${deviceId}`;
-  const devicesKey = `${config.redis.userDevicesPrefix}${sub}`;
+// ─── Revoke a single device session in Redis ────────────────────────
 
+export const revokeSession = async (sub: string, deviceId: string) => {
   if (!sub) {
     throw new BadRequestError("revokeSession called with undefined sub");
   }
+
   if (!deviceId) {
     throw new BadRequestError("revokeSession called with undefined deviceId");
   }
 
-  const h = await redis.get(latestKey);
+  const refreshLatestKey = getRefreshLatestKey(sub, deviceId);
+  const accessJtiKey = getAccessJtiKey(sub, deviceId);
+  const devicesKey = getDevicesKey(sub);
 
-  const pipeline = redis.getClient().pipeline();
+  await viaRedis(
+    "session:revoke",
+    async () => {
+      const client = redis.getClient();
+      const refreshHash = await client.get(refreshLatestKey);
+      const pipeline = client.pipeline();
 
-  if (h) pipeline.del(config.redis.refreshTokenHashPrefix + h);
-  pipeline.del(latestKey);
-  pipeline.srem(devicesKey, deviceId);
-  pipeline.scard(devicesKey);
+      if (refreshHash) {
+        pipeline.del(`${config.redis.refreshTokenHashPrefix}${refreshHash}`);
+      }
 
-  await pipeline.exec();
+      pipeline.del(refreshLatestKey);
+      pipeline.del(accessJtiKey);
+      pipeline.srem(devicesKey, deviceId);
+
+      assertPipeline(await pipeline.exec());
+      return true;
+    },
+    false,
+  );
 };
 
-// ─── Create MongoDB session ────────────────────────────────────────────────
+// ─── Create or update MongoDB session ───────────────────────────────
+
 export const createMongoSession = async (params: {
   userId: string;
   userPublicId: string;
@@ -131,7 +241,10 @@ export const createMongoSession = async (params: {
   const sessionId = `SES_${uuidv4().replace(/-/g, "").substring(0, 16)}`;
 
   await SessionModel.findOneAndUpdate(
-    { userId: params.userId, deviceId: params.deviceId },
+    {
+      userId: params.userId,
+      deviceId: params.deviceId,
+    },
     {
       $set: {
         userPublicId: params.userPublicId,
@@ -147,15 +260,21 @@ export const createMongoSession = async (params: {
         lastUsedAt: new Date(),
         expiresAt: params.expiresAt,
       },
-      $setOnInsert: { sessionId },
+      $setOnInsert: {
+        sessionId,
+      },
     },
-    { upsert: true, new: true },
+    {
+      upsert: true,
+      new: true,
+    },
   );
 
   return sessionId;
 };
 
-// ─── JTI Blacklist ────────────────────────────────────────────────────────
+// ─── Access-token JTI blacklist ─────────────────────────────────────
+
 export const blacklistJti = async (
   jti: string,
   expiresAt: Date,
@@ -164,71 +283,117 @@ export const blacklistJti = async (
     Math.floor((expiresAt.getTime() - Date.now()) / 1000),
     0,
   );
+
   if (ttl > 0) {
-    await redis
-      .getClient()
-      .setex(`${config.redis.blacklistPrefix}${jti}`, ttl, "1");
+    // Redis may be unavailable. MongoDB remains the fallback
+    // source of truth for whether a session is active.
+    await redis.set(`${config.redis.blacklistPrefix}${jti}`, "1", ttl);
   }
 };
 
 export const isJtiBlacklisted = async (jti: string): Promise<boolean> => {
-  const result = await redis.get(`${config.redis.blacklistPrefix}${jti}`);
+  const result = await redis.get(
+    `${config.redis.blacklistPrefix}${jti}`,
+    false,
+  );
+
   return result === "1";
 };
 
-// ─── Kill session (Redis + MongoDB) ───────────────────────────────────────
+// ─── Revoke one session in MongoDB and Redis ────────────────────────
+
 export const revokeSessionFull = async (
   sub: string,
   deviceId: string,
   accessTokenJti?: string,
   accessTokenExpiresAt?: Date,
 ) => {
-  // Redis revoke (existing)
-  await revokeSession(sub, deviceId);
-
-  // MongoDB revoke (new)
+  // Mark the MongoDB session inactive even if Redis is unavailable.
   await SessionModel.updateOne(
-    { userId: sub, deviceId },
-    { $set: { isActive: false } },
+    {
+      userId: sub,
+      deviceId,
+      isActive: true,
+    },
+    {
+      $set: {
+        isActive: false,
+      },
+    },
   );
 
-  // Blacklist access token if provided
+  // Remove refresh-token and access-JTI cache keys.
+  await revokeSession(sub, deviceId);
+
+  // Blacklist the access token until it expires.
   if (accessTokenJti && accessTokenExpiresAt) {
     await blacklistJti(accessTokenJti, accessTokenExpiresAt);
   }
 };
 
-// ─── Kill all sessions (Redis + MongoDB) ──────────────────────────────────
+// ─── Revoke multiple sessions in MongoDB and Redis ──────────────────
+
 export const revokeAllSessionsFull = async (
   sub: string,
-  excludeDeviceId?: string, // keep current device active
+  excludeDeviceId?: string,
 ) => {
-  // Get all active sessions from MongoDB
-  const filter: any = { userId: sub, isActive: true };
-  if (excludeDeviceId) filter.deviceId = { $ne: excludeDeviceId };
+  const filter: {
+    userId: string;
+    isActive: boolean;
+    deviceId?: { $ne: string };
+  } = {
+    userId: sub,
+    isActive: true,
+  };
 
+  if (excludeDeviceId) {
+    filter.deviceId = { $ne: excludeDeviceId };
+  }
+
+  // Read the active sessions before marking them inactive.
   const sessions = await SessionModel.find(filter).lean();
 
-  // Blacklist all access JTIs
+  // MongoDB is the source of truth for session revocation.
+  await SessionModel.updateMany(filter, {
+    $set: {
+      isActive: false,
+    },
+  });
+
+  // Best-effort blacklist for still-valid access tokens.
   const now = new Date();
-  const blacklistPromises = sessions
-    .filter((s) => s.accessTokenJti && s.accessTokenExpiresAt > now)
-    .map((s) => blacklistJti(s.accessTokenJti, s.accessTokenExpiresAt));
 
-  await Promise.all(blacklistPromises);
+  for (const session of sessions) {
+    if (
+      session.accessTokenJti &&
+      session.accessTokenExpiresAt &&
+      session.accessTokenExpiresAt > now
+    ) {
+      await blacklistJti(session.accessTokenJti, session.accessTokenExpiresAt);
+    }
+  }
 
-  // MongoDB: mark all inactive
-  await SessionModel.updateMany(filter, { $set: { isActive: false } });
+  // Remove Redis cache entries for revoked devices.
+  await revokeAllSessions(sub, excludeDeviceId);
 
-  // Redis: revoke all (existing)
-  await revokeAllSessions(sub);
+  // Preserve the excluded device in the Redis device set.
   if (excludeDeviceId) {
-    const devicesKey = `${config.redis.userDevicesPrefix}${sub}`;
-    await redis.getClient().sadd(devicesKey, excludeDeviceId);
+    const devicesKey = getDevicesKey(sub);
+
+    await viaRedis(
+      "session:sadd",
+      async () => {
+        await redis.getClient().sadd(devicesKey, excludeDeviceId);
+
+        return true;
+      },
+      false,
+    );
   }
 };
 
-// ─── Get active sessions ──────────────────────────────────────────────────
+// ─── Get active user sessions ───────────────────────────────────────
+
 export const getUserSessions = async (
   userPublicId: string,
   currentDeviceId: string,
@@ -241,32 +406,47 @@ export const getUserSessions = async (
     .sort({ lastUsedAt: -1 })
     .lean();
 
-  return sessions.map((s) => ({
-    sessionId: s.sessionId,
-    deviceName: s.deviceName,
-    ipAddress: s.ipAddress,
-    lastUsedAt: s.lastUsedAt,
-    createdAt: s.createdAt,
-    isCurrent: s.deviceId === currentDeviceId,
+  return sessions.map((session) => ({
+    sessionId: session.sessionId,
+    deviceName: session.deviceName,
+    ipAddress: session.ipAddress,
+    lastUsedAt: session.lastUsedAt,
+    createdAt: session.createdAt,
+    isCurrent: session.deviceId === currentDeviceId,
   }));
 };
 
-// ─── Redis reconnect → rehydrate blacklist ────────────────────────────────
+// ─── Redis reconnect: rehydrate blacklist ───────────────────────────
+
 export const rehydrateBlacklistOnRedisReconnect = async () => {
-  logger.info("Redis reconnected — rehydrating JTI blacklist");
+  logger.info("Redis reconnected — rehydrating authentication cache");
 
-  const recentlyKilled = await SessionModel.find({
+  // Rebuild the blacklist from revoked MongoDB sessions
+  // whose access tokens have not expired yet.
+  const killed = await SessionModel.find({
     isActive: false,
-    updatedAt: { $gte: new Date(Date.now() - 15 * 60 * 1000) },
-    accessTokenJti: { $exists: true },
+    accessTokenJti: { $exists: true, $ne: null },
     accessTokenExpiresAt: { $gt: new Date() },
-  }).lean();
+  })
+    .select("accessTokenJti accessTokenExpiresAt")
+    .lean();
 
-  for (const session of recentlyKilled) {
-    await blacklistJti(session.accessTokenJti, session.accessTokenExpiresAt);
+  for (const session of killed) {
+    if (session.accessTokenJti && session.accessTokenExpiresAt) {
+      await blacklistJti(session.accessTokenJti, session.accessTokenExpiresAt);
+    }
   }
 
-  logger.info("JTI blacklist rehydration complete", {
-    count: recentlyKilled.length,
+  // Remove potentially stale authentication caches.
+  // requireAuth can rebuild them from MongoDB when needed.
+  await purgeByPattern(`${config.redis.pwdverPrefix}*`);
+  await purgeByPattern(`${config.redis.sessionAccessJtiPrefix}*`);
+
+  // Existing application counter recovery.
+  await purgeByPattern("daily_tx:*");
+  await purgeByPattern("velocity:*");
+
+  logger.info("Authentication cache rehydration complete", {
+    blacklistedSessionCount: killed.length,
   });
 };

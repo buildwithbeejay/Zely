@@ -44,6 +44,7 @@ class VaultController implements Controller {
     );
     this.route.get(`${this.path}`, requireAuth, this.listVaults);
     this.route.get(`${this.path}/:vaultId`, requireAuth, this.getVault);
+    this.route.patch(`${this.path}/:vaultId/edit`, requireAuth, this.editVault);
     this.route.delete(
       `${this.path}/:vaultId`,
       requireAuth,
@@ -151,6 +152,25 @@ class VaultController implements Controller {
       return res.status(StatusCodes.OK).json({ ok: true, data: result });
     },
   );
+
+  public editVault = asyncWrapper(async (req: IAuthRequest, res: Response) => {
+    const context = getRequestContext(req);
+    const userId = req.user?.userId;
+    const { vaultId } = req.params;
+    const { title, targetAmountMinor } = req.body;
+
+    if (!userId) throw new BadRequestError("User not authenticated");
+
+    const result = await this.vaultService.editVault({
+      userId,
+      vaultId,
+      title,
+      targetAmountMinor,
+      context,
+    });
+
+    return res.status(StatusCodes.OK).json({ ok: true, data: result });
+  });
 }
 
 export default VaultController;

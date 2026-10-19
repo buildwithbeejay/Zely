@@ -1,16 +1,17 @@
 import { hashToken } from "@/config/hashToken";
 import { config } from "@/config/index";
 import { SessionModel } from "@/modules/sessions/session.model";
-import UnauthenticatedError from "@/shared/errors/unaunthenticated";
+import UnauthenticatedError, {
+  AuthErrorCode,
+} from "@/shared/errors/unaunthenticated";
 import * as jwt from "jsonwebtoken";
 import { v4 as uuidv4 } from "uuid";
-import Unauthorized from "../../shared/errors/unauthorized";
 import {
   createMongoSession,
   deleteRefreshByHash,
   getPayloadByRefreshToken,
   storeRefreshToken,
-} from "./session.helper";
+} from "@/infrastructure/helpers/session.helper";
 
 interface AccessPayload {
   sub: string;
@@ -130,7 +131,10 @@ export const verifyRefreshToken = async (
       await deleteRefreshByHash(token);
       throw new UnauthenticatedError("Refresh token expired");
     }
-    throw new Unauthorized("Invalid refresh token");
+    throw new UnauthenticatedError(
+      "Invalid refresh token",
+      AuthErrorCode.UNAUTHORIZED,
+    );
   }
 
   let storedPayload = await getPayloadByRefreshToken(token);
@@ -143,7 +147,10 @@ export const verifyRefreshToken = async (
     }).lean();
 
     if (!session) {
-      throw new Unauthorized("Refresh session revoked");
+      throw new UnauthenticatedError(
+        "Refresh session revoked",
+        AuthErrorCode.SESSION_REVOKED,
+      );
     }
 
     // rebuild payload

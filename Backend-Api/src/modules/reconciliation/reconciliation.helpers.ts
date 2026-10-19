@@ -44,14 +44,16 @@ export async function getCachedBalance(
   _ownerId: Types.ObjectId,
   ownerType: LedgerOwnerType,
   ledgerAccountId: Types.ObjectId,
+  session?: ClientSession, // ← add this
 ): Promise<{ balance: number; ownerPublicId: string; sourceDoc: any | null }> {
   if (
     ownerType === LedgerOwnerType.WALLET ||
     ownerType === LedgerOwnerType.SYSTEM ||
     ownerType === LedgerOwnerType.USER
   ) {
-    // SYSTEM and USER owner types resolve to a wallet
-    const wallet = await Wallet.findOne({ ledgerAccountId }).lean();
+    const wallet = await Wallet.findOne({ ledgerAccountId })
+      .session(session ?? null) // ← forward it
+      .lean();
     if (!wallet)
       return { balance: 0, ownerPublicId: "UNKNOWN", sourceDoc: null };
     return {
@@ -62,17 +64,20 @@ export async function getCachedBalance(
   }
 
   if (ownerType === LedgerOwnerType.VAULT) {
-    let vault = await vaultModel.findOne({ ledgerAccountId }).lean();
+    let vault = await vaultModel
+      .findOne({ ledgerAccountId })
+      .session(session ?? null) // ← forward it
+      .lean();
 
-    // Fallback — use ownerId (vault's _id stored on LedgerAccount)
     if (!vault) {
-      vault = await vaultModel.findById(_ownerId).lean();
+      vault = await vaultModel
+        .findById(_ownerId)
+        .session(session ?? null) // ← forward it
+        .lean();
     }
 
-    if (!vault) {
+    if (!vault)
       return { balance: 0, ownerPublicId: "UNKNOWN", sourceDoc: null };
-    }
-
     return {
       balance: vault.currentBalanceMinor ?? 0,
       ownerPublicId: vault.userPublicId,
@@ -181,7 +186,7 @@ export async function computeTrueBalance(
         },
       },
     },
-  ]).session(session);
+  ]).session(session ?? null);
 
   if (result.length === 0) {
     return 0;
@@ -328,6 +333,7 @@ export async function reconcileLedgerAccount(
     action: AuditAction.RECONCILIATION_DRIFT_DETECTED,
     status: AuditStatus.PENDING,
     payload: {
+      type: "LEDGER_DRIFT",
       ledgerAccountPublicId: ledgerAccount.ledgerAccountId,
       ownerType: ledgerAccount.ownerType,
       ownerPublicId,
@@ -699,4 +705,70 @@ export async function escalateUnresolvedDrifts(context: IRequestContext) {
       context,
     });
   }
+}
+
+// reconciliation.helpers.ts
+
+export async function updateCachedBalance(
+  drift: IDriftRecord,
+  trueBalance: number,
+  session: ClientSession,
+): Promise<void> {
+  if (
+    drift.ownerType === LedgerOwnerType.WALLET ||
+    drift.ownerType === LedgerOwnerType.USER
+  ) {
+    const result = await Wallet.updateOne(
+      { ledgerAccountId: drift.ledgerAccountId },
+      { $set: { availableBalance: trueBalance } },
+      { session },
+    );
+
+    if (result.matchedCount === 0) {
+      throw new BadRequestError(
+        `No wallet found for ledgerAccountId ${drift.ledgerAccountId} — cache not updated`,
+      );
+    }
+    return;
+  }
+
+  if (drift.ownerType === LedgerOwnerType.VAULT) {
+    const result = await vaultModel.updateOne(
+      { ledgerAccountId: drift.ledgerAccountId },
+      { $set: { currentBalanceMinor: trueBalance } },
+      { session },
+    );
+
+    if (result.matchedCount === 0) {
+      // Fallback — vault may be keyed by ownerId
+      const fallback = await vaultModel.updateOne(
+        { _id: drift.ownerId },
+        { $set: { currentBalanceMinor: trueBalance } },
+        { session },
+      );
+
+      if (fallback.matchedCount === 0) {
+        throw new BadRequestError(
+          `No vault found for ledgerAccountId ${drift.ledgerAccountId} — cache not updated`,
+        );
+      }
+    }
+    return;
+  }
+
+  if (drift.ownerType === LedgerOwnerType.SYSTEM) {
+    // System accounts (treasury, revenue) have no cached balance doc.
+    // Correction is ledger-only — DIRECT_CACHE_SYNC has no meaning here.
+    // Log and return without writing anything.
+    logger.info("System account drift — no cache to update", {
+      ledgerAccountId: drift.ledgerAccountId,
+      ownerType: drift.ownerType,
+      trueBalance,
+    });
+    return;
+  }
+
+  throw new BadRequestError(
+    `Unknown ownerType ${drift.ownerType} — cannot update cached balance`,
+  );
 }

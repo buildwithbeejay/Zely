@@ -2,13 +2,8 @@ import { verifyPassword } from "@/config/password";
 import redis from "@/infrastructure/cache/redis.cli";
 import { revokeAllSessionsFull } from "@/infrastructure/helpers/session.helper";
 
-export const storeResetMetadata = async (
-  email: string,
-  metadata: any,
-): Promise<void> => {
-  await redis
-    .getClient()
-    .setex(`password_reset_meta:${email}`, 15 * 60, JSON.stringify(metadata));
+export const storeResetMetadata = async (email: string, metadata: any) => {
+  await redis.set(`password_reset_meta:${email}`, metadata, 15 * 60); // never throws
 };
 
 export const isPasswordInHistory = async (
@@ -20,7 +15,6 @@ export const isPasswordInHistory = async (
   }
 
   for (const oldHash of user.passwordHistory) {
-    console.log(oldHash);
     const isMatch = await verifyPassword(newPassword, oldHash);
     if (isMatch) {
       return true;

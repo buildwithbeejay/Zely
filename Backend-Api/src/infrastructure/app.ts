@@ -9,7 +9,7 @@ import helmet from "helmet";
 import Controller from "@/config/interfaces/controller.interfaces";
 
 // Infrastructure
-import redis from "@/infrastructure/cache/redis.cli";
+import redis, { rateLimitRedis } from "@/infrastructure/cache/redis.cli";
 import mongo from "@/infrastructure/database/mongo";
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
@@ -75,6 +75,7 @@ import {
 } from "@/modules/reconciliation/reconciliation.model";
 import { runPinConsumer } from "@/kafka/consumer/pinconsumer";
 import { runReversalConsumer } from "@/kafka/consumer/reversal.consumer";
+import { runReconciliationConsumer } from "@/kafka/consumer/reconciliation.consumer";
 
 class App {
   public express: Application;
@@ -143,8 +144,9 @@ class App {
 
   private async connectToRedis(): Promise<void> {
     try {
-      await redis.connect();
-      logger.info("✅ Redis connected successfully");
+      if (await redis.connect()) logger.info("✅ Redis[main] connected");
+      if (await rateLimitRedis.connect())
+        logger.info("✅ Redis[ratelimit] connected");
     } catch (error) {
       logger.error("❌ Redis connection failed:", error);
       throw new Error("Redis connection failed - cannot start application");
@@ -167,6 +169,7 @@ class App {
       await runKycConsumer();
       await runFundingConsumer();
       await runReversalConsumer();
+      await runReconciliationConsumer();
       await startDLQSink();
 
       // Retry consumer starts and connects, but blocks on retryReadySignal
@@ -175,7 +178,7 @@ class App {
       logger.info("✅ Kafka consumer started");
       logger.info("✅ Kafka system ready");
     } catch (error) {
-      logger.error("⚠️  Kafka initialization failed (non-critical):", error);
+      logger.error("Kafka initialization failed (non-critical):", error);
       logger.warn("Application will continue without Kafka event streaming");
     }
   }

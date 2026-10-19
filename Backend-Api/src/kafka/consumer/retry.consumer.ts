@@ -37,6 +37,8 @@ import {
   PAYMENT_RETRY_LEVELS,
   PIN_MAX_RETRIES,
   PIN_RETRY_LEVELS,
+  RECONCILIATION_MAX_RETRIES,
+  RECONCILIATION_RETRY_LEVELS,
   REVERSAL_MAX_RETRIES,
   REVERSAL_RETRY_LEVELS,
   TRANSFER_MAX_RETRIES,
@@ -48,6 +50,7 @@ import { validateWithSchema } from "../schema/zod.helper";
 import { pinProcessor } from "@/events/pinProcessor.evt";
 import { markProvisioningFailedForEvent } from "@/kafka/retry.helpers/provisionin.helper";
 import { processReversalEvent } from "@/events/reversalProcessor.evt";
+import { processReconciliationEvents } from "@/events/reconciliationProcessor.evt";
 
 // retry.ready.ts
 let markReady: () => void;
@@ -77,7 +80,7 @@ interface ProcessorConfig {
   maxRetries: number;
   onSuccess?: (result: any, envelope: RetryEnvelope) => Promise<void>; // ← optional success callback for side effects
 }
-const PROCESSOR_REGISTRY: Record<ProcessorType, ProcessorConfig> = {
+export const PROCESSOR_REGISTRY: Record<ProcessorType, ProcessorConfig> = {
   auth: {
     processor: processAuthEvent,
     retryLevels: AUTH_RETRY_LEVELS,
@@ -135,6 +138,15 @@ const PROCESSOR_REGISTRY: Record<ProcessorType, ProcessorConfig> = {
     processor: processReversalEvent,
     retryLevels: REVERSAL_RETRY_LEVELS,
     maxRetries: REVERSAL_MAX_RETRIES,
+    onSuccess: async (_result: any, envelope: RetryEnvelope) => {
+      await onEventConfirmed(envelope, envelope.meta.originalTopic);
+    },
+  },
+
+  reconciliation: {
+    processor: processReconciliationEvents,
+    retryLevels: RECONCILIATION_RETRY_LEVELS,
+    maxRetries: RECONCILIATION_MAX_RETRIES,
     onSuccess: async (_result: any, envelope: RetryEnvelope) => {
       await onEventConfirmed(envelope, envelope.meta.originalTopic);
     },

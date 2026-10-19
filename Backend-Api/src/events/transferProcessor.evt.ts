@@ -1,11 +1,11 @@
-import mongoose from "mongoose";
-import { logger } from "@/shared/utils/logger";
+import { writeToEmailOutbox } from "@/kafka/emails/write.email";
+import { RetryEnvelope } from "@/kafka/retry.helpers/retry.envelope";
 import {
   PermanentError,
   TransientError,
 } from "@/kafka/retry.helpers/retry.error";
-import { RetryEnvelope } from "@/kafka/retry.helpers/retry.envelope";
-import { writeToEmailOutbox } from "@/kafka/emails/write.email";
+import { logger } from "@/shared/utils/logger";
+import mongoose from "mongoose";
 
 /** -------------------------
  * PROCESS TRANSFER EVENTS
@@ -157,6 +157,8 @@ export async function processTransferEvents(
           logger.info("No email for INTERNAL system transfer yet");
         } else if (transferType === "VAULT_TRANSFER") {
           logger.info("No email for VAULT system transfer yet");
+        } else if (transferType === "FEE_REFUND") {
+          logger.info("Fee refund — no email needed");
         } else {
           throw new PermanentError(`Unsupported transferType: ${transferType}`);
         }

@@ -20,7 +20,11 @@ export async function retryOrDLQ({ topic, message, error }: RetryOrDLQParams) {
 
   try {
     if (isPermanent || error.name === "PermanentError") {
-      await sendToDLQ(topic, message, error);
+      await sendToDLQ(
+        topic,
+        { ...message, meta: { ...message.meta, lastError: error.message } },
+        error,
+      );
       logger.error("Permanent error, sent to DLQ");
       return;
     }
@@ -45,7 +49,11 @@ export async function retryOrDLQ({ topic, message, error }: RetryOrDLQParams) {
     }
 
     await markProvisioningFailedForEvent(message.event);
-    await sendToDLQ(topic, message, error);
+    await sendToDLQ(
+      topic,
+      { ...message, meta: { ...message.meta, lastError: error.message } },
+      error,
+    );
     logger.error("Unknown error type, sent to DLQ");
   } catch (fatalError: any) {
     logger.error("Fatal error in retryOrDLQ", {

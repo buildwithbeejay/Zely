@@ -48,4 +48,9 @@ const createVaultSchema = Joi.object({
   }),
 }).options({ stripUnknown: true });
 
+export const editVaultSchema = Joi.object({
+  name: Joi.string().trim().min(2).max(50),
+  targetAmount: Joi.number().positive(),
+}).or("name", "targetAmount"); // at least one field required
+
 export default createVaultSchema;

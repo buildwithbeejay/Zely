@@ -30,6 +30,8 @@ export function initializeSocketServer(httpServer: HttpServer): Server {
       const payload = jwt.verify(token, config.jwt.accessSecret) as any;
       socket.data.userId = payload.userId;
       socket.data.email = payload.email;
+      socket.data.role = payload.role;
+
       next();
     } catch (err) {
       logger.warn("WebSocket connection rejected — invalid token", {
@@ -42,9 +44,10 @@ export function initializeSocketServer(httpServer: HttpServer): Server {
   // ─── Connection handler ────────────────────────────────────────────────
   io.on("connection", (socket) => {
     const userId = socket.data.userId;
+    const isAdmin = socket.data.role === "ADMIN";
 
     // Register the connection
-    socketRegistry.register(userId, socket);
+    socketRegistry.register(userId, socket, isAdmin);
 
     // Send confirmation to client
     socket.emit("connected", {

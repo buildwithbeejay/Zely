@@ -6,10 +6,8 @@ import {
   getLockTime,
 } from "@/infrastructure/helpers/emit.audit.helper";
 import {
-  getLatestHashForDevice,
   revokeAllSessionsFull,
   revokeSessionFull,
-  storeRefreshToken,
 } from "@/infrastructure/helpers/session.helper";
 import {
   createSession,
@@ -17,7 +15,6 @@ import {
   verifyRefreshToken,
 } from "@/infrastructure/helpers/token.helper";
 import BadRequestError from "@/shared/errors/badRequest";
-import Unauthorized from "@/shared/errors/unauthorized";
 import { generateEventId, generateUserId } from "@/shared/utils/id.generator";
 import mongoose from "mongoose";
 import { AuditAction, AuditStatus } from "../audit/audit.interface";
@@ -42,6 +39,9 @@ import { parseUserAgent } from "@/modules/helpers/parser.agent";
 import { NotificationType } from "@/modules/notification/notification.model";
 import NotificationService from "@/modules/notification/notification.service";
 import { SessionModel } from "@/modules/sessions/session.model";
+import UnauthenticatedError, {
+  AuthErrorCode,
+} from "@/shared/errors/unaunthenticated";
 import { logger } from "@/shared/utils/logger";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
@@ -51,6 +51,7 @@ class authService {
   private otpManager = new OTPManager();
   private static readonly RESET_TOKEN_TTL_MS = 20 * 60 * 1000; // 20 min
   private notification = new NotificationService();
+  REDIS_UNAVAILABLE = "__REDIS_UNAVAILABLE__";
 
   private createResponseDTO(
     user: any,
@@ -495,27 +496,22 @@ class authService {
     }
 
     // Fire and forget — MongoDB is source of truth
+
     Promise.all([
-      redis
-        .getClient()
-        .set(
-          `${config.redis.sessionLatestPrefix}${user._id}:${context.deviceId}`,
-          hashRf.toString(),
-          "EX",
-          60 * 60 * 24 * 7,
-        ),
-      redis
-        .getClient()
-        .set(
-          `${config.redis.pwdverPrefix}${user._id}`,
-          String(user.passwordVersion ?? 0),
-          "EX",
-          60 * 60 * 24 * 7,
-        ),
+      redis.set(
+        `${config.redis.sessionAccessJtiPrefix}${user._id}:${context.deviceId}`,
+        jti,
+        60 * 60 * 24 * 7,
+      ),
+      redis.set(
+        `${config.redis.pwdverPrefix}${user._id}`,
+        String(user.passwordVersion ?? 0),
+        60 * 60 * 24 * 7,
+      ),
     ]).catch((err) =>
       logger.warn("Redis seed after login failed", {
         userId: user.userId,
-        err,
+        message: err?.message,
       }),
     );
 
@@ -530,51 +526,57 @@ class authService {
   }
 
   public async refreshToken(refreshToken: string, context: IRequestContext) {
-    const { jwtPayload, storedPayload } =
-      await verifyRefreshToken(refreshToken);
+    const { jwtPayload } = await verifyRefreshToken(refreshToken);
 
     const incomingHash = hashToken(refreshToken);
-    // When issuing new tokens, mark the old hash as "rotated"
-    // not just expired
-    await redis.getClient().set(
-      `rotated:${incomingHash}`,
-      "1",
-      "EX",
-      30, // 30 second grace
-    );
-    const latestHash = await getLatestHashForDevice(
-      jwtPayload.sub,
-      jwtPayload.deviceId,
-    );
-
+    const rotatedKey = `rotated:${incomingHash}`;
     const GRACE_WINDOW_MS = 30_000;
-    const tokenAge = Date.now() - (storedPayload.iat ?? 0) * 1000;
 
-    if (incomingHash !== latestHash) {
-      // Check if this is a known rotated token (legitimate race)
-      const wasRotated = await redis.getClient().get(`rotated:${incomingHash}`);
-
-      if (!wasRotated) {
-        // Never seen this hash — genuine replay attempt
-        await revokeAllSessionsFull(jwtPayload.sub);
-        throw new Unauthorized("Refresh token reuse detected");
-      }
-
-      // Was legitimately rotated — reject gracefully without revoking
-      throw new Unauthorized("Token already rotated, use new token");
-    }
-
+    // Mongo decides which refresh token is current, so Redis can't cause false rejections
     const session = await SessionModel.findOne({
       userId: jwtPayload.sub,
       deviceId: jwtPayload.deviceId,
     }).lean();
 
     if (!session || !session.isActive) {
-      throw new Unauthorized("Session has been revoked");
+      throw new UnauthenticatedError(
+        "Session has been revoked",
+        AuthErrorCode.SESSION_REVOKED,
+      );
+    }
+
+    if (incomingHash !== session.refreshTokenHash) {
+      const marker = await redis.execute<string | null>(
+        () => redis.getClient().get(rotatedKey),
+        async () => this.REDIS_UNAVAILABLE,
+        "refresh:rotated:get",
+      );
+
+      if (marker === this.REDIS_UNAVAILABLE) {
+        // can't tell a harmless race from reuse: reject, but don't revoke everything
+        throw new UnauthenticatedError(
+          "Token already rotated, use new token",
+          AuthErrorCode.TOKEN_ALREADY_ROTATED,
+        );
+      }
+      if (!marker) {
+        await revokeAllSessionsFull(jwtPayload.sub);
+        throw new UnauthenticatedError(
+          "Refresh token reuse detected",
+          AuthErrorCode.TOKEN_REUSE_DETECTED,
+        );
+      }
+      throw new UnauthenticatedError(
+        "Token already rotated, use new token",
+        AuthErrorCode.TOKEN_ALREADY_ROTATED,
+      );
     }
 
     const user = await this.userModel.findById(jwtPayload.sub).exec();
     if (!user) throw new NotFoundError("User not found");
+
+    // Mark BEFORE issuing, so a concurrent request never sees "new hash, no marker"
+    await redis.set(rotatedKey, "1", 30);
 
     const {
       accTk: newAccess,
@@ -583,34 +585,64 @@ class authService {
       jti,
       accessTokenExp,
     } = await issueTokensForUser({
-      _id: user!._id.toString(),
-      userId: user!.userId,
-      email: user!.email,
-      role: user!.role,
+      _id: user._id.toString(),
+      userId: user.userId,
+      email: user.email,
+      role: user.role,
       deviceId: context.deviceId || context.userAgent,
-      passwordVersion: user!.passwordVersion ?? 0,
+      passwordVersion: user.passwordVersion ?? 0,
       ipAddress: context.ip,
       userAgent: context.userAgent,
     });
 
-    await SessionModel.updateOne(
-      { userId: jwtPayload.sub, deviceId: jwtPayload.deviceId, isActive: true },
+    const newRefreshTokenHash = hashToken(newRefresh);
+
+    const sessionUpdate = await SessionModel.updateOne(
+      {
+        userId: jwtPayload.sub,
+        deviceId: jwtPayload.deviceId,
+        isActive: true,
+        refreshTokenHash: incomingHash,
+      },
       {
         $set: {
-          refreshTokenHash: hashToken(newRefresh),
+          refreshTokenHash: newRefreshTokenHash,
           refreshTokenJti: payload.jti,
           accessTokenJti: jti,
           accessTokenExpiresAt: new Date(accessTokenExp * 1000),
           expiresAt: new Date(payload.exp * 1000),
           lastUsedAt: new Date(),
-          passwordVersion: user.passwordVersion ?? 0, // ← add this
+          passwordVersion: user.passwordVersion ?? 0,
         },
       },
     );
 
-    await storeRefreshToken(newRefresh, payload);
+    if (sessionUpdate.matchedCount !== 1) {
+      throw new UnauthenticatedError(
+        "Refresh token has already been rotated",
+        AuthErrorCode.TOKEN_ALREADY_ROTATED,
+      );
+    }
+
+    // MongoDB has saved the rotated session. Update Redis mappings.
+    const latestKey = `${config.redis.sessionLatestPrefix}${jwtPayload.sub}:${jwtPayload.deviceId}`;
+
+    const accessJtiKey = `${config.redis.sessionAccessJtiPrefix}${jwtPayload.sub}:${jwtPayload.deviceId}`;
+
+    const now = Math.floor(Date.now() / 1000);
+
+    const refreshTtl = Math.max(Number(payload.exp) - now, 1);
+    const accessTtl = Math.max(Number(accessTokenExp) - now, 1);
+
+    await Promise.all([
+      // Latest refresh-token hash
+      redis.set(latestKey, newRefreshTokenHash, refreshTtl),
+
+      // Latest access-token JTI
+      redis.set(accessJtiKey, jti, accessTtl),
+    ]);
+
     await markOldTokenForDeletionAfter(refreshToken, GRACE_WINDOW_MS);
-    //await deleteRefreshByHash(refreshToken);
 
     if (context) {
       context.userId = user.userId;
@@ -821,7 +853,6 @@ class authService {
   ) {
     const normalizedEmail = email.toLowerCase().trim();
     const eventId = generateEventId();
-    const mongoSession = await mongoose.startSession();
 
     if (newPassword !== confirmPassword) {
       throw new BadRequestError("Passwords do not match");
@@ -867,82 +898,77 @@ class authService {
     }
 
     // 7. Atomic consume — prevents replay
-    const tokenDoc = await PasswordResetTokenModel.findOneAndUpdate(
-      { jti: payload.jti, consumedAt: null },
-      {
-        $set: {
-          consumedAt: new Date(),
-          ipAtConsume: context.ip,
-          userAgentAtConsume: context.userAgent,
-        },
-      },
-      { new: true },
-    );
-
-    if (!tokenDoc) {
-      throw new BadRequestError("Reset token has already been used");
-    }
-
-    // 8. Soft device binding — log mismatches, don't block
-    if (
-      tokenDoc.ipAddress !== context.ip ||
-      tokenDoc.userAgent !== context.userAgent
-    ) {
-      logger.warn("Password reset used from different device than issued", {
-        email: normalizedEmail,
-        jti: payload.jti,
-        issuedFrom: { ip: tokenDoc.ipAddress, ua: tokenDoc.userAgent },
-        usedFrom: { ip: context.ip, ua: context.userAgent },
-      });
-    }
-
-    // 9. Hash and update — bumping passwordVersion invalidates all outstanding tokens
     const hashedPwd = await hashedPassword(newPassword);
-
-    await mongoSession.withTransaction(async () => {
-      await User.updateOne(
-        { email: normalizedEmail },
-        {
-          $set: {
-            password: hashedPwd,
-            passwordChangedAt: new Date(),
-            "security.failedLoginAttempts": 0,
-            "security.lockedUntil": null,
-            "security.lockReason": null,
+    const mongoSession = await mongoose.startSession();
+    try {
+      await mongoSession.withTransaction(async () => {
+        const tokenDoc = await PasswordResetTokenModel.findOneAndUpdate(
+          { jti: payload.jti, consumedAt: null },
+          {
+            $set: {
+              consumedAt: new Date(),
+              ipAtConsume: context.ip,
+              userAgentAtConsume: context.userAgent,
+            },
           },
-          $inc: { passwordVersion: 1 },
-          $push: {
-            passwordHistory: { $each: [hashedPwd], $slice: -5 },
-          },
-        },
-        { session: mongoSession, runValidators: true },
-      );
+          { new: true, session: mongoSession },
+        );
+        if (!tokenDoc) {
+          throw new BadRequestError("Reset token has already been used");
+        }
 
-      // 11. Emit success event
-      await emitOutboxEvent({
-        topic: "password.events",
-        eventId,
-        eventType: AuditAction.PASSWORD_RESET_SUCCESS,
-        action: AuditAction.PASSWORD_RESET_SUCCESS,
-        status: AuditStatus.PENDING,
-        payload: {
-          email: normalizedEmail,
-          name: user.name,
-        },
-        aggregateType: "PASSWORD_RESET_SUCCESS",
-        aggregateId: normalizedEmail,
-        version: 1,
-        context,
+        if (
+          tokenDoc.ipAddress !== context.ip ||
+          tokenDoc.userAgent !== context.userAgent
+        ) {
+          logger.warn("Password reset used from different device than issued", {
+            email: normalizedEmail,
+            jti: payload.jti,
+            issuedFrom: { ip: tokenDoc.ipAddress, ua: tokenDoc.userAgent },
+            usedFrom: { ip: context.ip, ua: context.userAgent },
+          });
+        }
+
+        await User.updateOne(
+          { email: normalizedEmail },
+          {
+            $set: {
+              password: hashedPwd,
+              passwordChangedAt: new Date(),
+              "security.failedLoginAttempts": 0,
+              "security.lockedUntil": null,
+              "security.lockReason": null,
+            },
+            $inc: { passwordVersion: 1 },
+            $push: { passwordHistory: { $each: [hashedPwd], $slice: -5 } },
+          },
+          { session: mongoSession, runValidators: true },
+        );
+
+        await emitOutboxEvent(
+          {
+            topic: "password.events",
+            eventId,
+            eventType: AuditAction.PASSWORD_RESET_SUCCESS,
+            action: AuditAction.PASSWORD_RESET_SUCCESS,
+            status: AuditStatus.PENDING,
+            payload: { email: normalizedEmail, name: user.name },
+            aggregateType: "PASSWORD_RESET_SUCCESS",
+            aggregateId: normalizedEmail,
+            version: 1,
+            context,
+          },
+          { session: mongoSession }, // inside the transaction now
+        );
       });
-    });
+    } finally {
+      await mongoSession.endSession();
+    }
 
-    mongoSession.endSession();
-
-    // 10. Side effects: invalidate sessions, kill any stray OTPs
-    await invalidateAllUsrSess(user._id.toString());
-    await redis
-      .getClient()
-      .del(`${config.redis.pwdverPrefix}${user._id.toString()}`);
+    // 10. Side effects: none of these can fail the request because of Redis
+    const userId = user._id.toString();
+    await invalidateAllUsrSess(userId);
+    await redis.delete(`${config.redis.pwdverPrefix}${userId}`);
     await this.otpManager.invalidate(
       normalizedEmail,
       OTPPurpose.PASSWORD_RESET,
@@ -952,7 +978,7 @@ class authService {
       context,
       AuditAction.USER_PASSWORD_RESET,
       AuditStatus.SUCCESS,
-      user._id.toString(),
+      userId,
     );
 
     return {
@@ -1049,43 +1075,61 @@ class authService {
     const hashedPwd = await hashedPassword(newPassword);
 
     const mongoSession = await mongoose.startSession();
-    await mongoSession.withTransaction(async () => {
-      await this.userModel.updateOne(
-        { _id: user._id },
-        {
-          $set: {
-            password: hashedPwd,
-            passwordChangedAt: new Date(),
+    try {
+      await mongoSession.withTransaction(async () => {
+        await this.userModel.updateOne(
+          { _id: user._id },
+          {
+            $set: {
+              password: hashedPwd,
+              passwordChangedAt: new Date(),
+            },
+            $inc: { passwordVersion: 1 },
+            $push: {
+              passwordHistory: { $each: [hashedPwd], $slice: -5 },
+            },
           },
-          $inc: { passwordVersion: 1 },
-          $push: {
-            passwordHistory: { $each: [hashedPwd], $slice: -5 },
+          { session: mongoSession },
+        );
+
+        await emitOutboxEvent(
+          {
+            topic: "password.events",
+            eventId: generateEventId(),
+            eventType: AuditAction.PASSWORD_RESET_SUCCESS,
+            action: AuditAction.PASSWORD_RESET_SUCCESS,
+            status: AuditStatus.PENDING,
+            payload: { email: user.email, name: user.name },
+            aggregateType: "PASSWORD_RESET_SUCCESS",
+            aggregateId: user.userId,
+            version: 1,
+            context,
           },
-        },
-        { session: mongoSession },
-      );
+          { session: mongoSession },
+        );
+      });
+    } finally {
+      await mongoSession.endSession(); // before, any error leaked the session
+    }
 
-      await emitOutboxEvent(
-        {
-          topic: "password.events",
-          eventId: generateEventId(),
-          eventType: AuditAction.PASSWORD_RESET_SUCCESS,
-          action: AuditAction.PASSWORD_RESET_SUCCESS,
-          status: AuditStatus.PENDING,
-          payload: { email: user.email, name: user.name },
-          aggregateType: "PASSWORD_CHANGE",
-          aggregateId: user.userId,
-          version: 1,
-          context,
-        },
-        { session: mongoSession },
-      );
-    });
+    // ── Invalidate stale password-version cache
 
-    mongoSession.endSession();
+    // The next request's token will carry the NEW passwordVersion, but
+    // Redis still holds the OLD one until this is cleared. Without this,
+    // every freshly refreshed token gets wrongly rejected until the key's
+    // TTL naturally expires.
+    // const pwdVerKey = `${config.redis.pwdverPrefix}${user._id}`;
+    // console.log(pwdVerKey);
+    // await redis.getClient().del(pwdVerKey);
 
-    // Revoke all other sessions — keep current device
+    // // Revoke all other sessions — keep current device
+    // await revokeAllSessionsFull(userSub, currentDeviceId);
+
+    // 1. Revoke other sessions first (Mongo-first, so it works with Redis down)
     await revokeAllSessionsFull(userSub, currentDeviceId);
+
+    // 2. Cache cleanup is best effort and never throws
+    await redis.delete(`${config.redis.pwdverPrefix}${user._id}`);
 
     // Notify user
     await this.notification.createAndEmit({
@@ -1113,8 +1157,16 @@ class authService {
     const sub = jwtPayload.sub;
     const deviceId = jwtPayload.deviceId;
 
-    if (!sub) throw new Unauthorized("Missing subject");
-    if (!deviceId) throw new Unauthorized("Missing device ID");
+    if (!sub)
+      throw new UnauthenticatedError(
+        "Missing subject",
+        AuthErrorCode.UNAUTHORIZED,
+      );
+    if (!deviceId)
+      throw new UnauthenticatedError(
+        "Missing device ID",
+        AuthErrorCode.UNAUTHORIZED,
+      );
 
     if (context) {
       context.userId = jwtPayload.userId;

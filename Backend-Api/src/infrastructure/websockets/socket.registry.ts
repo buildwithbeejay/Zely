@@ -7,11 +7,16 @@ const registry = new Map<string, Set<string>>();
 // socketId → socket instance (for emitting)
 const sockets = new Map<string, Socket>();
 
+const adminSockets = new Set<string>();
+
 export const socketRegistry = {
-  register: (userId: string, socket: Socket) => {
+  register: (userId: string, socket: Socket, isAdmin = false) => {
     if (!registry.has(userId)) {
       registry.set(userId, new Set());
     }
+
+    if (isAdmin) adminSockets.add(socket.id);
+
     registry.get(userId)!.add(socket.id);
     sockets.set(socket.id, socket);
 
@@ -25,6 +30,9 @@ export const socketRegistry = {
     if (registry.get(userId)?.size === 0) {
       registry.delete(userId);
     }
+
+    adminSockets.delete(socketId);
+
     sockets.delete(socketId);
 
     logger.info("WebSocket client unregistered");
@@ -45,6 +53,19 @@ export const socketRegistry = {
         logger.debug("WebSocket event emitted");
       }
     });
+  },
+
+  emitToAdmins: (event: string, data: unknown) => {
+    if (adminSockets.size === 0) return;
+
+    adminSockets.forEach((socketId) => {
+      const socket = sockets.get(socketId);
+      if (socket?.connected) {
+        socket.emit(event, data);
+      }
+    });
+
+    logger.debug("Emitted to admin sockets", { count: adminSockets.size });
   },
 
   isConnected: (userId: string): boolean => {

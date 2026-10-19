@@ -15,6 +15,7 @@ import FundingService, {
   FundingSource,
 } from "@/modules/fee/funding/funding.service";
 import { getActivePaymentProvider } from "@/modules/payments/payment.provider.factory";
+import { quietBullErrors } from "@/infrastructure/queues/quiet-bull-errors";
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 const QUEUE_NAME = "payment-reaper-queue";
@@ -32,6 +33,7 @@ const connection = {
 };
 
 export const paymentReaperQueue = new Queue(QUEUE_NAME, { connection });
+quietBullErrors(paymentReaperQueue, "payment-reaper");
 
 // ─── Schedule the recurring job ────────────────────────────────────────────
 export async function schedulePaymentReaper() {
@@ -148,6 +150,8 @@ export function startPaymentReaperWorker() {
     },
     { connection },
   );
+
+  quietBullErrors(worker, "payment-reaper-worker");
 
   worker.on("completed", (job, result) => {
     logger.info("Payment reaper job completed", { jobId: job.id, ...result });

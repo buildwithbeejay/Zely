@@ -1,28 +1,37 @@
-import { createCircuitBreaker, BrokenCircuitError } from '../circuit-breaker';
-import { logger } from '@/shared/utils/logger';
+import { createCircuitBreaker, BrokenCircuitError } from "../circuit-breaker";
+import { logThrottled } from "@/shared/utils/throttled-log";
 
-// Redis circuit breaker
-// Strategy: consecutive — opens after 3 failures in a row
-// Redis failures are usually binary (up or down) so consecutive is correct
 export const redisBreaker = createCircuitBreaker({
-  service: 'redis',
-  strategy: 'consecutive',
+  service: "redis",
+  strategy: "consecutive",
   consecutiveFailures: 3,
-  halfOpenAfter: 15_000, // try again after 15 seconds
+  halfOpenAfter: 15_000,
 });
 
 export async function withRedisBreaker<T>(
   fn: () => Promise<T>,
   fallback: () => Promise<T>,
-  context?: string
+  context?: string,
 ): Promise<T> {
   try {
     return await redisBreaker.execute(fn);
   } catch (err: any) {
     if (err instanceof BrokenCircuitError) {
-      logger.warn('Redis circuit breaker is OPEN — falling back to MongoDB polling', { context });
-      return fallback();
+      logThrottled(
+        "warn",
+        "redis-breaker-open",
+        "Redis circuit OPEN — using fallbacks",
+      );
+    } else {
+      logThrottled(
+        "warn",
+        "redis-op-failed",
+        "Redis operation failed — using fallback",
+        {
+          error: err?.code ?? err?.message,
+        },
+      );
     }
-    throw err;
+    return fallback();
   }
 }

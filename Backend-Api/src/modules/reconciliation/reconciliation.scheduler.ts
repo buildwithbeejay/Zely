@@ -7,6 +7,7 @@ import { conn } from "@/workers/bullMq.config";
 import { escalateUnresolvedDrifts } from "@/modules/reconciliation/reconciliation.helpers";
 import { emitOutboxEvent } from "@/infrastructure/helpers/emit.audit.helper";
 import { generateEventId } from "@/shared/utils/id.generator";
+import { quietBullErrors } from "@/infrastructure/queues/quiet-bull-errors";
 
 const QUEUE_NAME = "reconciliation-queue";
 const JOB_NAME = "hourly-reconciliation";
@@ -15,6 +16,7 @@ const ESCALATION_JOB_NAME = "drift-escalation-check";
 const connection = conn;
 
 export const reconciliationQueue = new Queue(QUEUE_NAME, { connection });
+quietBullErrors(reconciliationQueue, "reconciliation");
 
 export async function scheduleReconciliation() {
   // Remove any existing schedulers to avoid duplicates on restart
@@ -28,7 +30,7 @@ export async function scheduleReconciliation() {
   // Schedule new recurring job — runs every hour
   await reconciliationQueue.upsertJobScheduler(
     JOB_NAME,
-    { pattern: "* * * * *" }, //{ pattern: "0 * * * *" }, // top of every hour
+    { pattern: "0 * * * *" }, //{ pattern: "0 * * * *" }, // top of every hour
     {
       name: JOB_NAME,
       data: {},
@@ -76,6 +78,8 @@ export function startReconciliationWorker() {
     },
     { connection },
   );
+
+  quietBullErrors(worker, "reconciliation-worker");
 
   worker.on("completed", (job, result) => {
     logger.info("✅ Reconciliation job completed", {

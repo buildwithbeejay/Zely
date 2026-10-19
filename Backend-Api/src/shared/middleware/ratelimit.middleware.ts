@@ -1,14 +1,15 @@
-
-import RateLimiter, { getKeyByIP, RateLimitConfig, RateLimitInfo } from "@/config/ratelimiter.config";
+import {
+  getKeyByIP,
+  RateLimitConfig,
+  RateLimitInfo,
+} from "@/config/ratelimiter.config";
 import { Request, Response, NextFunction } from "express";
-import Redis from "ioredis";
 
-export function createRateLimitMiddleware(
-  redis: Redis,
-  options: RateLimitConfig,
-) {
-  const limiter = new RateLimiter(redis, options.keyPrefix);
-  const failMode = options.failMode ?? 'open';
+import { logger } from "@/shared/utils/logger";
+import redis, { rateLimitRedis } from "@/infrastructure/cache/redis.cli";
+
+export function createRateLimitMiddleware(options: RateLimitConfig) {
+  const failMode = options.failMode ?? "open";
 
   return async (
     req: Request,
@@ -23,61 +24,65 @@ export function createRateLimitMiddleware(
       const keyGenerator = options.keyGenerator || getKeyByIP;
       const key = keyGenerator(req);
 
-      // Try to consume — handle Redis failure separately from middleware bugs
       let info: RateLimitInfo;
       try {
-        info = await limiter.consume(
-          key,
-          options.maxRequests,
+        // Redis if available, in-memory counter if not. Doesn't throw on Redis outages.
+        const hit = await rateLimitRedis.rateLimitHit(
+          `${options.keyPrefix}:${key}`,
           options.windowMs,
         );
-      } catch (redisErr) {
-        if (failMode === 'closed') {
-          console.error('Rate limiter Redis failure (failing closed):', {
-            path: req.path,
-            error: redisErr,
-          });
+        const retryAfter = Math.max(1, Math.ceil(hit.resetInMs / 1000));
+        info = {
+          limit: options.maxRequests,
+          current: hit.count,
+          remaining: Math.max(0, options.maxRequests - hit.count),
+          resetTime: new Date(Date.now() + hit.resetInMs),
+          retryAfter,
+        };
+      } catch (err) {
+        // Last resort only: both Redis and the memory fallback failed (should never happen).
+        logger.error("Rate limiter failure", {
+          path: req.path,
+          failMode,
+          message: (err as Error)?.message,
+        });
+        if (failMode === "closed") {
           res.status(503).json({
             success: false,
             error: {
-              code: 'RATE_LIMIT_UNAVAILABLE',
-              message: 'Service temporarily unavailable. Please try again in a moment.',
+              code: "RATE_LIMIT_UNAVAILABLE",
+              message:
+                "Service temporarily unavailable. Please try again in a moment.",
             },
           });
           return;
         }
-
-        // failMode === 'open' — log and allow request through
-        console.error('Rate limiter Redis failure (failing open):', {
-          path: req.path,
-          error: redisErr,
-        });
         return next();
       }
 
-      // Set informational headers on every response
-      res.setHeader('X-RateLimit-Limit', info.limit.toString());
-      res.setHeader('X-RateLimit-Remaining', info.remaining.toString());
-      res.setHeader('X-RateLimit-Reset', info.resetTime.toISOString());
+      res.setHeader("X-RateLimit-Limit", info.limit.toString());
+      res.setHeader("X-RateLimit-Remaining", info.remaining.toString());
+      res.setHeader("X-RateLimit-Reset", info.resetTime.toISOString());
 
-      // Limit exceeded — block with 429
       if (info.current > info.limit) {
-        res.setHeader('Retry-After', info.retryAfter.toString());
+        res.setHeader("Retry-After", info.retryAfter.toString());
 
         if (options.onLimitReached) {
           try {
             options.onLimitReached(req, info);
           } catch (cbErr) {
-            // Don't let a callback bug break the middleware
-            console.error('onLimitReached callback error:', cbErr);
+            logger.error("onLimitReached callback error", {
+              message: (cbErr as Error)?.message,
+            });
           }
         }
 
         res.status(429).json({
           success: false,
           error: {
-            code: 'RATE_LIMIT_EXCEEDED',
-            message: options.message || 'Too many requests, please try again later.',
+            code: "RATE_LIMIT_EXCEEDED",
+            message:
+              options.message || "Too many requests, please try again later.",
             retryAfter: info.retryAfter,
             resetTime: info.resetTime.toISOString(),
           },
@@ -87,9 +92,9 @@ export function createRateLimitMiddleware(
 
       next();
     } catch (error) {
-      // Bug in the middleware itself (not a Redis issue).
-      // Don't take the app down — log and let the request through.
-      console.error('Rate limit middleware unexpected error:', error);
+      logger.error("Rate limit middleware unexpected error", {
+        message: (error as Error)?.message,
+      });
       next();
     }
   };

@@ -54,6 +54,14 @@ export async function startDLQSink() {
         consumer_group: DLQ_CONSUMER_GROUP,
       });
 
+      // Determine error type from headers
+      const errorType = (() => {
+        const headerVal = message.headers?.["x-error-type"]?.toString();
+        if (headerVal === "PermanentError") return "PERMANENT";
+        if (headerVal === "TransientError") return "TRANSIENT";
+        return "UNKNOWN";
+      })();
+
       try {
         const raw = message.value?.toString();
         if (!raw) return await commitOffset();
@@ -62,7 +70,7 @@ export async function startDLQSink() {
 
         // Idempotent insert
         await failedCollection.updateOne(
-          { "payload.eventId": payload.event?.eventId },
+          { "payload.event.eventId": payload.event?.eventId },
           {
             $setOnInsert: {
               topic,
@@ -75,6 +83,12 @@ export async function startDLQSink() {
                 ]),
               ),
               error: payload.meta?.lastError || payload.error || "unknown",
+              errorType,
+              status: "PENDING",
+              replayAttempts: 0,
+              replayedAt: null,
+              replayedBy: null,
+              lastReplayError: null,
               failedAt: new Date(),
             },
           },

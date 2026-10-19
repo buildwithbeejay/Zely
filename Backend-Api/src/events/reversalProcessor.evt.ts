@@ -1,3 +1,4 @@
+import { socketRegistry } from "@/infrastructure/websockets/socket.registry";
 import { writeToEmailOutbox } from "@/kafka/emails/write.email";
 import {
   UserBalanceSummaryModel,
@@ -9,18 +10,20 @@ import {
   PermanentError,
   TransientError,
 } from "@/kafka/retry.helpers/retry.error";
+import { AuditAction } from "@/modules/audit/audit.interface";
 import { accountStatus } from "@/modules/auth/authinterface";
 import User from "@/modules/auth/authmodel";
-import { Wallet, WalletStatus } from "@/modules/wallet/wallet.model";
-import { logger } from "@/shared/utils/logger";
-import mongoose from "mongoose";
-import { deriveOutboxEventId } from "./authProcessor.evt";
+import { LedgerAccount } from "@/modules/ledger/ledger.account.model";
+import { NotificationType } from "@/modules/notification/notification.model";
+import NotificationService from "@/modules/notification/notification.service";
 import {
   DriftAction,
   DriftSeverity,
 } from "@/modules/reconciliation/reconciliation.model";
-import { LedgerAccount } from "@/modules/ledger/ledger.account.model";
-import { AuditAction } from "@/modules/audit/audit.interface";
+import { Wallet, WalletStatus } from "@/modules/wallet/wallet.model";
+import { logger } from "@/shared/utils/logger";
+import mongoose from "mongoose";
+import { deriveOutboxEventId } from "./authProcessor.evt";
 
 export async function processReversalEvent(
   topic: string,
@@ -28,6 +31,7 @@ export async function processReversalEvent(
   session: mongoose.ClientSession,
 ) {
   const { eventId, payload, version, eventType } = envelope.event;
+  const notification = new NotificationService();
 
   try {
     if (!version || version !== 1) {
@@ -168,6 +172,50 @@ export async function processReversalEvent(
             { session },
           );
         }
+
+        // ─── Notifications
+        await Promise.all([
+          // Sender gets credit notification
+          notification.createAndEmit({
+            userId: senderPublicId,
+            type: NotificationType.CREDIT,
+            title: "Transfer Reversed",
+            message: `Your transfer of ₦${originalAmount.toLocaleString("en-NG")} to ${receiver?.name ?? "a user"} has been reversed. ₦${reversalAmount.toLocaleString("en-NG")} has been returned to your account.`,
+            amount: reversalAmount,
+            currency: "NGN",
+            referenceId: `${reversalTransactionRef}:sender`,
+          }),
+
+          // Receiver gets debit notification
+          notification.createAndEmit({
+            userId: receiverPublicId,
+            type: NotificationType.DEBIT,
+            title: "Transfer Recalled",
+            message: `₦${originalAmount.toLocaleString("en-NG")} received from ${sender?.name ?? "a user"} has been recalled by Zely. Reason: ${reason ?? "Administrative reversal"}.`,
+            amount: originalAmount,
+            currency: "NGN",
+            referenceId: `${reversalTransactionRef}:receiver`,
+          }),
+        ]);
+
+        socketRegistry.emitToUser(senderPublicId, "balance:updated", {
+          walletType: "MAIN_CHECKINGS",
+          newBalance: senderWallet ? undefined : undefined,
+          direction: "credit",
+          amount: reversalAmount,
+          currency: "NGN",
+          transactionRef: reversalTransactionRef,
+          occurredAt,
+        });
+
+        socketRegistry.emitToUser(receiverPublicId, "balance:updated", {
+          walletType: "MAIN_CHECKINGS",
+          direction: "debit",
+          amount: originalAmount,
+          currency: "NGN",
+          transactionRef: reversalTransactionRef,
+          occurredAt,
+        });
 
         logger.info(`[v${version}] TRANSFER_REVERSED projections written`, {
           reversalId,

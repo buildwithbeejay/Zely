@@ -64,6 +64,9 @@ export enum IDPrefixes {
 
   //SWEEP
   SWEEP = "SWP",
+
+  //ACTIVITY
+  ACTIVITY = "ACT",
 }
 
 export type EntityId<T extends IDPrefixes> = `${T}_${string}`;
@@ -226,6 +229,9 @@ export const generateReferenceId = (): EntityId<IDPrefixes.REFERENCE> =>
 
 export const generateTransferId = (): EntityId<IDPrefixes.TRANSFER> =>
   generateId(IDPrefixes.TRANSFER) as EntityId<IDPrefixes.TRANSFER>;
+
+export const generateActivityId = (): EntityId<IDPrefixes.ACTIVITY> =>
+  generateId(IDPrefixes.ACTIVITY) as EntityId<IDPrefixes.ACTIVITY>;
 
 export const generateAccrualId = (): EntityId<IDPrefixes.ACCRUAL> =>
   generateId(IDPrefixes.ACCRUAL) as EntityId<IDPrefixes.ACCRUAL>;
