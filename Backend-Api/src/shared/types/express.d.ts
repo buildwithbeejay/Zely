@@ -11,6 +11,7 @@ declare global {
         role: string;
         deviceId: string;
         sub: string;
+        jti: string;
       };
       context?: IRequestContext;
     }

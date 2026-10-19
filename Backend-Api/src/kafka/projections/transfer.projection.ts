@@ -166,6 +166,105 @@ export async function handleTransactionCompleted(
 
   logger.info("Wallet projection updated");
 
+  // ------------------- FEE REFUND -------------------
+  if (transferType === "FEE_REFUND") {
+    // Only create transaction entry for the receiver (user getting refund)
+    await UserTransactionModel.updateOne(
+      { eventId, userId: receiver.userId, walletType: receiver.accountType },
+      {
+        $setOnInsert: {
+          userId: receiver.userId,
+          name: receiver.name,
+          transactionRef,
+          category: "FEE_REFUND",
+          direction: "credit",
+          amount,
+          currency,
+          referenceId,
+          fee: 0,
+          walletType: receiver.accountType,
+          status: action,
+          counterpartyUserId: "SYSTEM_USER",
+          counterpartyName: "Zely",
+          occurredAt: occurredAtDate,
+          counterpartyWalletType: "SYSTEM_REVENUE",
+        },
+      },
+      { upsert: true, session },
+    );
+
+    // Update balance summary for receiver
+    const receiverExisting = await UserBalanceSummaryModel.findOne({
+      userId: receiver.userId,
+    }).session(session);
+
+    const receiverMain =
+      receiver.accountType === "MAIN_CHECKINGS"
+        ? receiver.currentBalance
+        : (receiverExisting?.mainBalance ?? 0);
+
+    const receiverSavings =
+      receiver.accountType === "SAVINGS"
+        ? receiver.currentBalance
+        : (receiverExisting?.savingsBalance ?? 0);
+
+    const receiverVault =
+      receiver.accountType === "VAULT"
+        ? receiver.currentBalance
+        : (receiverExisting?.vaultBalance ?? 0);
+
+    await UserBalanceSummaryModel.updateOne(
+      { userId: receiver.userId },
+      {
+        $set: {
+          [accountFieldMap[receiver.accountType]]: receiver.currentBalance,
+          totalBalance: receiverMain + receiverSavings + receiverVault,
+          currency,
+        },
+        $inc: { totalCredit: amount },
+      },
+      { upsert: true, session },
+    );
+
+    // Websocket
+    socketRegistry.emitToUser(receiver.userId, "balance:updated", {
+      id: eventId,
+      walletType: receiver.accountType,
+      newBalance: receiver.currentBalance,
+      direction: "credit",
+      amount,
+      currency,
+      transactionRef,
+      occurredAt: occurredAtDate,
+    });
+
+    // Notification
+    await notification.createAndEmit({
+      userId: receiver.userId,
+      type: NotificationType.CREDIT,
+      title: "Fee Refunded",
+      message: `₦${amount.toLocaleString("en-NG")} transaction fee has been refunded to your account`,
+      amount,
+      currency,
+      referenceId: `${transactionRef}:fee_refund`,
+    });
+
+    // Invalidate cache
+    await Promise.all([
+      redis.delete(`wallets:${receiver.userId}`),
+      redis.delete(`balance:summary:${receiver.userId}`),
+      redis.delete(`transactions:${receiver.userId}`),
+    ]);
+
+    logger.info("✅ Fee refund projection updated", {
+      transactionRef,
+      userId: receiver.userId,
+      amount,
+    });
+
+    return; // early return — no need to run the rest
+  }
+
   /** -------------------------
    * BALANCE SUMMARY PROJECTIONS
    * ------------------------- */

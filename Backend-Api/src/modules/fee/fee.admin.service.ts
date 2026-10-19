@@ -17,6 +17,10 @@ import {
 import TransactionBuilder from "@/modules/ledger/ledger.transaction.builder";
 import mongoose from "mongoose";
 import User from "@/modules/auth/authmodel";
+import { recordAdminActivity } from "@/modules/admin/admin.activity.helper";
+import { AdminActivityType } from "@/modules/admin/admin.activity.model";
+import { emitOutboxEvent } from "@/infrastructure/helpers/emit.audit.helper";
+import { AuditAction, AuditStatus } from "@/modules/audit/audit.interface";
 
 class FeeAdminService {
   private userModel = User;
@@ -126,6 +130,7 @@ class FeeAdminService {
     accrualId: string,
     adminUserId: string,
     reason: string,
+    adminEmail: string,
   ) => {
     const accrual = await FeeAccrual.findOne({ accrualId });
     if (!accrual) throw new NotFoundError("FEE_ACCRUAL_NOT_FOUND");
@@ -142,6 +147,15 @@ class FeeAdminService {
     accrual.waiverReason = reason;
     await accrual.save();
 
+    await recordAdminActivity({
+      adminUserId,
+      adminEmail,
+      type: AdminActivityType.FEE_WAIVED,
+      description: `Waived ₦${accrual.amount} fee for transaction ${accrual.transactionRef}`,
+      targetUserId: accrual.payerUserId,
+      metadata: { accrualId, reason },
+    });
+
     logger.info("Fee waived", { accrualId, adminUserId, reason });
     return accrual;
   };
@@ -150,6 +164,7 @@ class FeeAdminService {
   public sweepAccruals = async (
     adminUserId: string,
     currency: string = "NGN",
+    adminEmail: string,
   ) => {
     const pending = await FeeAccrual.find({
       status: FeeAccrualStatus.ACCRUED,
@@ -186,6 +201,14 @@ class FeeAdminService {
       sweep.status = FeeSweepStatus.COMPLETED;
       sweep.completedAt = new Date();
       await sweep.save();
+
+      await recordAdminActivity({
+        adminUserId,
+        adminEmail,
+        type: AdminActivityType.FEE_SWEPT,
+        description: `Swept ${pending.length} fee accruals totalling ₦${totalAmount} to treasury`,
+        metadata: { sweepId, accrualCount: pending.length, totalAmount },
+      });
 
       logger.info("✅ Fee sweep completed", {
         sweepId,
@@ -239,6 +262,8 @@ class FeeAdminService {
   public updateSchedule = async (
     id: string,
     updates: { tiers?: any[]; isActive?: boolean },
+    adminEmail: string,
+    adminUserId: string,
   ) => {
     const config = await FeeConfig.findByIdAndUpdate(
       id,
@@ -246,6 +271,14 @@ class FeeAdminService {
       { new: true },
     );
     if (!config) throw new NotFoundError("FEE_CONFIG_NOT_FOUND");
+
+    await recordAdminActivity({
+      adminUserId,
+      adminEmail,
+      type: AdminActivityType.FEE_SCHEDULE_UPDATED,
+      description: `Updated fee schedule for ${config.transferType} (${config.currency})`,
+      metadata: { id, updates },
+    });
 
     // Invalidate cache so next transfer picks up new tiers
     clearFeeConfigCache();
@@ -377,7 +410,66 @@ class FeeAdminService {
         { session },
       );
 
+      // 10. Emit outbox event for projection
+      const updatedUserWallet = await Wallet.findById(userWallet._id).session(
+        session,
+      );
+
+      await emitOutboxEvent(
+        {
+          topic: "transfer.events",
+          eventId: refundRef,
+          eventType: AuditAction.TRANSACTION_COMPLETED,
+          action: AuditAction.TRANSACTION_COMPLETED,
+          status: AuditStatus.PENDING,
+          payload: {
+            transactionRef: refundRef,
+            referenceId: accrual.accrualId,
+            transferType: "FEE_REFUND",
+            amount: accrual.amount,
+            currency: accrual.currency,
+            fee: 0,
+            sender: {
+              userId: "SYSTEM_USER",
+              name: "Zely",
+              email: "system@zely.app",
+              accountType: "SYSTEM_REVENUE",
+              accountNumber: "0000000000",
+              walletId: revenueWallet.walletId,
+              previousBalance: revenueWallet.availableBalance,
+              currentBalance: revenueWallet.availableBalance - accrual.amount,
+              version: revenueWallet.version,
+            },
+            receiver: {
+              userId: accrual.payerUserId,
+              name: accrual.payerName,
+              email: "",
+              accountType: "MAIN_CHECKINGS",
+              accountNumber: "",
+              walletId: userWallet.walletId,
+              previousBalance: userWallet.availableBalance,
+              currentBalance: updatedUserWallet?.availableBalance ?? 0,
+              version: updatedUserWallet?.version ?? 0,
+            },
+          },
+          aggregateType: "TRANSFER",
+          aggregateId: refundRef,
+          version: 1,
+          context,
+        },
+        { session },
+      );
+
       await session.commitTransaction();
+
+      await recordAdminActivity({
+        adminUserId,
+        adminEmail: context.email ?? "",
+        type: AdminActivityType.FEE_WAIVED_AND_REFUNDED,
+        description: `Waived and refunded ₦${accrual.amount} fee to ${accrual.payerUserId} for transaction ${accrual.transactionRef}`,
+        targetUserId: accrual.payerUserId,
+        metadata: { accrualId, reason, refundRef },
+      });
 
       logger.info("✅ Fee waived and refunded", {
         accrualId,

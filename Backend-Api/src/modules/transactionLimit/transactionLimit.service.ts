@@ -9,8 +9,15 @@ import {
   CHECK_AND_INCREMENT_SCRIPT,
   CHECK_AND_INCREMENT_VELOCITY_SCRIPT,
 } from "./transaction.limit.lua";
+import { logThrottled } from "@/shared/utils/throttled-log";
 
 const CACHE_TTL_SECONDS = 300;
+
+export type Reservation = {
+  daily: "redis" | "mongo" | "none";
+  velocity: "redis" | "mongo" | "none";
+};
+type Reserved = { ok: boolean; source: "redis" | "mongo" };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COALESCER
@@ -97,69 +104,144 @@ function secondsUntilMidnight(): number {
 // Coalesced per user to prevent thundering herd on DB
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function getDailyTotalWithRehydration(
+// async function getDailyTotalWithRehydration(
+//   userPublicId: string,
+//   currency: string,
+// ): Promise<number> {
+//   const dailyKey = getDailyKey(userPublicId, currency);
+//   const cached = await redis.get<number>(dailyKey);
+
+//   if (cached !== null) {
+//     return typeof cached === "number" ? cached : Number(cached);
+//   }
+
+//   // Coalesce concurrent requests for the same user
+//   // Only one DB query fires — rest wait for the same promise
+//   return coalesce(`daily:${userPublicId}:${currency}`, async () => {
+//     const record = await TransactionUsage.findOne({
+//       userPublicId,
+//       currency,
+//       date: getToday(),
+//     }).lean();
+
+//     const total = record?.dailyTotal ?? 0;
+
+//     // Rehydrate with remaining TTL for today — not a hardcoded 5 mins
+//     await redis.set(dailyKey, total, secondsUntilMidnight());
+
+//     return total;
+//   });
+// }
+
+async function ensureDailyKey(
   userPublicId: string,
   currency: string,
-): Promise<number> {
-  const dailyKey = getDailyKey(userPublicId, currency);
-  const cached = await redis.get<number>(dailyKey);
+  dailyKey: string,
+): Promise<boolean> {
+  if (!redis.isHealthy()) return false; // Redis down: the Mongo path handles this request
+  if (await redis.exists(dailyKey)) return true;
 
-  if (cached !== null) {
-    return typeof cached === "number" ? cached : Number(cached);
-  }
+  const total = await coalesce(
+    `daily:${userPublicId}:${currency}`,
+    async () => {
+      const record = await TransactionUsage.findOne({
+        userPublicId,
+        currency,
+        date: getToday(),
+      }).lean();
+      return record?.dailyTotal ?? 0;
+    },
+  );
 
-  // Coalesce concurrent requests for the same user
-  // Only one DB query fires — rest wait for the same promise
-  return coalesce(`daily:${userPublicId}:${currency}`, async () => {
-    const record = await TransactionUsage.findOne({
-      userPublicId,
-      currency,
-      date: getToday(),
-    }).lean();
+  // NX: never overwrite a value another request already wrote and incremented
+  await redis.execute(
+    () =>
+      redis
+        .getClient()
+        .set(
+          dailyKey,
+          String(total),
+          "EX",
+          Math.max(secondsUntilMidnight(), 60),
+          "NX",
+        ),
+    async () => null,
+    `rehydrate:daily:${userPublicId}`,
+  );
 
-    const total = record?.dailyTotal ?? 0;
-
-    // Rehydrate with remaining TTL for today — not a hardcoded 5 mins
-    await redis.set(dailyKey, total, secondsUntilMidnight());
-
-    return total;
-  });
+  return redis.exists(dailyKey); // confirm it landed
 }
 
-async function getVelocityCountWithRehydration(
-  userPublicId: string,
-): Promise<number> {
-  const velocityKey = getVelocityKey(userPublicId);
-  const cached = await redis.get<number>(velocityKey);
+// async function getVelocityCountWithRehydration(
+//   userPublicId: string,
+// ): Promise<number> {
+//   const velocityKey = getVelocityKey(userPublicId);
+//   const cached = await redis.get<number>(velocityKey);
 
-  if (cached !== null) {
-    return typeof cached === "number" ? cached : Number(cached);
-  }
+//   if (cached !== null) {
+//     return typeof cached === "number" ? cached : Number(cached);
+//   }
 
-  return coalesce(`velocity:${userPublicId}`, async () => {
+//   return coalesce(`velocity:${userPublicId}`, async () => {
+//     const record = await TransactionUsage.findOne({
+//       userPublicId,
+//       date: getToday(),
+//     }).lean();
+
+//     if (!record) return 0;
+
+//     const now = new Date();
+//     const windowStart = new Date(record.hourWindowStart);
+//     const secondsElapsed = (now.getTime() - windowStart.getTime()) / 1000;
+
+//     // Window expired — velocity resets
+//     if (secondsElapsed > 3600) return 0;
+
+//     const count = record.hourlyCount;
+//     const secondsRemaining = Math.floor(3600 - secondsElapsed);
+
+//     // Rehydrate with remaining TTL — not a fresh 3600
+//     // If Redis was down for 20 mins, only 40 mins are left in the window
+//     await redis.set(velocityKey, count, secondsRemaining);
+
+//     return count;
+//   });
+// }
+
+async function ensureVelocityKey(userPublicId: string): Promise<boolean> {
+  if (!redis.isHealthy()) return false;
+  const key = getVelocityKey(userPublicId);
+  if (await redis.exists(key)) return true;
+
+  const count = await coalesce(`velocity:${userPublicId}`, async () => {
     const record = await TransactionUsage.findOne({
       userPublicId,
       date: getToday(),
     }).lean();
-
     if (!record) return 0;
 
-    const now = new Date();
-    const windowStart = new Date(record.hourWindowStart);
-    const secondsElapsed = (now.getTime() - windowStart.getTime()) / 1000;
+    const elapsed =
+      (Date.now() - new Date(record.hourWindowStart).getTime()) / 1000;
+    if (elapsed > 3600 || record.hourlyCount === 0) return 0; // fresh window: Lua starts it
 
-    // Window expired — velocity resets
-    if (secondsElapsed > 3600) return 0;
-
-    const count = record.hourlyCount;
-    const secondsRemaining = Math.floor(3600 - secondsElapsed);
-
-    // Rehydrate with remaining TTL — not a fresh 3600
-    // If Redis was down for 20 mins, only 40 mins are left in the window
-    await redis.set(velocityKey, count, secondsRemaining);
-
-    return count;
+    await redis.execute(
+      () =>
+        redis
+          .getClient()
+          .set(
+            key,
+            String(record.hourlyCount),
+            "EX",
+            Math.max(Math.floor(3600 - elapsed), 1),
+            "NX",
+          ),
+      async () => null,
+      `rehydrate:velocity:${userPublicId}`,
+    );
+    return record.hourlyCount;
   });
+
+  return count === 0 ? true : redis.exists(key);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -301,59 +383,98 @@ async function atomicIncrementVelocity(
 // Single atomic operation — no separate findOne + findOneAndUpdate
 // ─────────────────────────────────────────────────────────────────────────────
 
+// async function commitToDatabase(
+//   userPublicId: string,
+//   amount: number,
+//   currency: string,
+// ): Promise<void> {
+//   const now = new Date();
+//   const today = getToday();
+
+//   // BUG FIX: was doing findOne + findOneAndUpdate as two ops (race condition)
+//   // Now a single atomic operation using $expr to check if hour window has expired
+//   await TransactionUsage.findOneAndUpdate(
+//     { userPublicId, currency, date: today },
+//     [
+//       {
+//         $set: {
+//           // ── FIX: $ifNull defaults to 0 when field doesn't exist on upsert
+//           dailyTotal: { $add: [{ $ifNull: ["$dailyTotal", 0] }, amount] },
+
+//           hourlyCount: {
+//             $cond: {
+//               if: {
+//                 $gt: [
+//                   { $subtract: [now, { $ifNull: ["$hourWindowStart", now] }] },
+//                   3600000,
+//                 ],
+//               },
+//               then: 1,
+//               else: { $add: [{ $ifNull: ["$hourlyCount", 0] }, 1] },
+//             },
+//           },
+
+//           hourWindowStart: {
+//             $cond: {
+//               if: {
+//                 $gt: [
+//                   { $subtract: [now, { $ifNull: ["$hourWindowStart", now] }] },
+//                   3600000,
+//                 ],
+//               },
+//               then: now,
+//               else: { $ifNull: ["$hourWindowStart", now] },
+//             },
+//           },
+//         },
+//       },
+//     ],
+//     { upsert: true, new: true, updatePipeline: true },
+//   );
+// }
+
 async function commitToDatabase(
   userPublicId: string,
   amount: number,
   currency: string,
+  reservation: Reservation,
 ): Promise<void> {
   const now = new Date();
-  const today = getToday();
+  const set: Record<string, any> = {};
 
-  // BUG FIX: was doing findOne + findOneAndUpdate as two ops (race condition)
-  // Now a single atomic operation using $expr to check if hour window has expired
-  await TransactionUsage.findOneAndUpdate(
-    { userPublicId, currency, date: today },
-    [
-      {
-        $set: {
-          // ── FIX: $ifNull defaults to 0 when field doesn't exist on upsert
-          dailyTotal: { $add: [{ $ifNull: ["$dailyTotal", 0] }, amount] },
-
-          hourlyCount: {
-            $cond: {
-              if: {
-                $gt: [
-                  { $subtract: [now, { $ifNull: ["$hourWindowStart", now] }] },
-                  3600000,
-                ],
-              },
-              then: 1,
-              else: { $add: [{ $ifNull: ["$hourlyCount", 0] }, 1] },
-            },
-          },
-
-          hourWindowStart: {
-            $cond: {
-              if: {
-                $gt: [
-                  { $subtract: [now, { $ifNull: ["$hourWindowStart", now] }] },
-                  3600000,
-                ],
-              },
-              then: now,
-              else: { $ifNull: ["$hourWindowStart", now] },
-            },
-          },
-        },
+  if (reservation.daily !== "mongo") {
+    set.dailyTotal = { $add: [{ $ifNull: ["$dailyTotal", 0] }, amount] };
+  }
+  if (reservation.velocity !== "mongo") {
+    const expired = {
+      $gt: [
+        { $subtract: [now, { $ifNull: ["$hourWindowStart", now] }] },
+        3600000,
+      ],
+    };
+    set.hourlyCount = {
+      $cond: {
+        if: expired,
+        then: 1,
+        else: { $add: [{ $ifNull: ["$hourlyCount", 0] }, 1] },
       },
-    ],
+    };
+    set.hourWindowStart = {
+      $cond: {
+        if: expired,
+        then: now,
+        else: { $ifNull: ["$hourWindowStart", now] },
+      },
+    };
+  }
+  if (Object.keys(set).length === 0) return; // everything was already counted in Mongo
+
+  await TransactionUsage.findOneAndUpdate(
+    { userPublicId, currency, date: getToday() },
+    [{ $set: set }],
     { upsert: true, new: true, updatePipeline: true },
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ENFORCE
-// ─────────────────────────────────────────────────────────────────────────────
 
 // export async function enforceTransactionLimits({
 //   userId,
@@ -371,95 +492,125 @@ async function commitToDatabase(
 //   currency: string;
 //   senderWallet: WalletDocument;
 //   session: ClientSession;
-// }): Promise<void> {
+// }): Promise<KycTier> {
+//   const DAILY_TX_TTL = 48 * 60 * 60; // 2 days
+//   const VELOCITY_TTL = 60 * 60; // 1 hour
 
 //   const limits = await getLimitsForTier(kycTier, currency);
 
-//   // ─── 1. Per-transaction limit ─────────────────────────────────────────
+//   // 1. per-transaction
 //   if (limits.maxPerTransaction > 0 && amount > limits.maxPerTransaction) {
 //     throw new BadRequestError(
-//       `TRANSFER_EXCEEDS_PER_TRANSACTION_LIMIT_OF_${limits.maxPerTransaction}`
+//       `TRANSFER_EXCEEDS_PER_TRANSACTION_LIMIT_OF_${limits.maxPerTransaction}`,
 //     );
 //   }
 
-//   // ─── 2. Daily limit ───────────────────────────────────────────────────
-//   // Redis UP  → Lua script — atomic check + increment in one operation
-//   // Redis DOWN → atomicIncrementDailyTotal — same guarantee via $expr + $inc
+//   // 2. daily
 //   if (limits.maxPerDay > 0) {
 //     const dailyKey = getDailyKey(userPublicId, currency);
+
+//     // Warm the Redis key from MongoDB if missing (Redis was down)
+//     await redis.execute(
+//       async () => {
+//         await getDailyTotalWithRehydration(userPublicId, currency);
+//       },
+//       async () => {}, // Redis still down — rehydration skipped, fallback handles it
+//       `rehydrate:daily:${userPublicId}`,
+//     );
 
 //     const result = await redis.execute(
 //       async () => {
 //         const client = redis.getClient();
-//         return client.eval(
+//         const raw = await client.eval(
 //           CHECK_AND_INCREMENT_SCRIPT,
 //           1,
 //           dailyKey,
-//           limits.maxPerDay,
-//           amount
-//         ) as Promise<number>;
+//           limits.maxPerDay.toString(),
+//           amount.toString(),
+//           DAILY_TX_TTL.toString(),
+//         );
+//         logger.info("Daily Lua result", {
+//           raw,
+//           type: typeof raw,
+//           userPublicId,
+//         });
+//         return raw as number;
 //       },
 //       async () => {
-//         // BUG FIX: was calling getVelocityCountWithRehydration (wrong function)
-//         // atomicIncrementDailyTotal does atomic check + increment in MongoDB
 //         const passed = await atomicIncrementDailyTotal(
 //           userPublicId,
 //           currency,
 //           amount,
-//           limits.maxPerDay
+//           limits.maxPerDay,
 //         );
-//         console.log("This is the passed value for daily total check", passed);
 //         return passed ? 1 : -1;
 //       },
-//       `enforce:daily:${userPublicId}`
+//       `enforce:daily:${userPublicId}`,
 //     );
 
-//     if (result === -1) {
+//     logger.info("Daily check final result", { result, userPublicId });
+//     if (result === -1)
 //       throw new BadRequestError(
-//         `TRANSFER_EXCEEDS_DAILY_LIMIT_OF_${limits.maxPerDay}`
+//         `TRANSFER_EXCEEDS_DAILY_LIMIT_OF_${limits.maxPerDay}`,
 //       );
-//     }
 //   }
 
-//   // ─── 3. Velocity check ────────────────────────────────────────────────
-//   // Redis UP  → Lua script — atomic check + increment in one operation
-//   // Redis DOWN → atomicIncrementVelocity — same guarantee via $expr + $inc
+//   // 3. velocity
 //   if (limits.maxTransfersPerHour > 0) {
 //     const velocityKey = getVelocityKey(userPublicId);
+
+//     // Warm the Redis key from MongoDB if missing (Redis was down)
+//     await redis.execute(
+//       async () => {
+//         await getVelocityCountWithRehydration(userPublicId);
+//       },
+//       async () => {}, // Redis still down — rehydration skipped, fallback handles it
+//       `rehydrate:velocity:${userPublicId}`,
+//     );
 
 //     const result = await redis.execute(
 //       async () => {
 //         const client = redis.getClient();
-//         return client.eval(
+//         const raw = await client.eval(
 //           CHECK_AND_INCREMENT_VELOCITY_SCRIPT,
 //           1,
 //           velocityKey,
-//           limits.maxTransfersPerHour
-//         ) as Promise<number>;
+//           limits.maxTransfersPerHour.toString(),
+//           VELOCITY_TTL.toString(),
+//         );
+//         logger.info("Velocity Lua result");
+//         return raw as number;
 //       },
 //       async () => {
-//         // BUG FIX: was calling getVelocityCountWithRehydration (read-only, wrong function)
-//         // atomicIncrementVelocity does atomic check + increment in MongoDB
 //         const passed = await atomicIncrementVelocity(
 //           userPublicId,
-//           limits.maxTransfersPerHour
+//           limits.maxTransfersPerHour,
 //         );
-//         console.log("This is the passed value", passed);
 //         return passed ? 1 : -1;
 //       },
-//       `enforce:velocity:${userPublicId}`
-
+//       `enforce:velocity:${userPublicId}`,
 //     );
 
-//     console.log("This is the velocity result", result);
-
-//     if (result === -1) {
+//     logger.info("Velocity check final result", { result, userPublicId });
+//     if (result === -1)
 //       throw new BadRequestError(
-//         `TRANSFER_VELOCITY_LIMIT_EXCEEDED_MAX_${limits.maxTransfersPerHour}_PER_HOUR`
+//         `TRANSFER_VELOCITY_LIMIT_EXCEEDED_MAX_${limits.maxTransfersPerHour}_PER_HOUR`,
 //       );
-//     }
 //   }
+
+//   logger.info("All limit checks passed");
+//   return kycTier;
 // }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMIT
+// Called AFTER session.commitTransaction() succeeds
+// MongoDB first (source of truth), Redis second (best effort)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─── enforce stays the same — Lua increments Redis (reservation) ──────────
+
+// ─── commit only writes MongoDB — Redis already updated by Lua ───────────
 
 export async function enforceTransactionLimits({
   userId,
@@ -477,172 +628,232 @@ export async function enforceTransactionLimits({
   currency: string;
   senderWallet: WalletDocument;
   session: ClientSession;
-}): Promise<KycTier> {
-  const DAILY_TX_TTL = 48 * 60 * 60; // 2 days
-  const VELOCITY_TTL = 60 * 60; // 1 hour
+}): Promise<{ kycTier: KycTier; reservation: Reservation }> {
+  const DAILY_TX_TTL = 48 * 60 * 60;
+  const VELOCITY_TTL = 60 * 60;
+  const reservation: Reservation = { daily: "none", velocity: "none" };
 
   const limits = await getLimitsForTier(kycTier, currency);
 
-  // 1. per-transaction
   if (limits.maxPerTransaction > 0 && amount > limits.maxPerTransaction) {
     throw new BadRequestError(
       `TRANSFER_EXCEEDS_PER_TRANSACTION_LIMIT_OF_${limits.maxPerTransaction}`,
     );
   }
 
-  // 2. daily
-  if (limits.maxPerDay > 0) {
-    const dailyKey = getDailyKey(userPublicId, currency);
-
-    // Warm the Redis key from MongoDB if missing (Redis was down)
-    await redis.execute(
-      async () => {
-        await getDailyTotalWithRehydration(userPublicId, currency);
-      },
-      async () => {}, // Redis still down — rehydration skipped, fallback handles it
-      `rehydrate:daily:${userPublicId}`,
-    );
-
-    const result = await redis.execute(
-      async () => {
-        const client = redis.getClient();
-        const raw = await client.eval(
-          CHECK_AND_INCREMENT_SCRIPT,
-          1,
-          dailyKey,
-          limits.maxPerDay.toString(),
-          amount.toString(),
-          DAILY_TX_TTL.toString(),
-        );
-        logger.info("Daily Lua result", {
-          raw,
-          type: typeof raw,
-          userPublicId,
-        });
-        return raw as number;
-      },
-      async () => {
-        const passed = await atomicIncrementDailyTotal(
+  try {
+    if (limits.maxPerDay > 0) {
+      const dailyKey = getDailyKey(userPublicId, currency);
+      const viaMongo = async (): Promise<Reserved> => ({
+        ok: await atomicIncrementDailyTotal(
           userPublicId,
           currency,
           amount,
           limits.maxPerDay,
+        ),
+        source: "mongo",
+      });
+
+      const redisReady = await ensureDailyKey(userPublicId, currency, dailyKey);
+      const r = redisReady
+        ? await redis.execute<Reserved>(
+            async () => {
+              const raw = await redis
+                .getClient()
+                .eval(
+                  CHECK_AND_INCREMENT_SCRIPT,
+                  1,
+                  dailyKey,
+                  String(limits.maxPerDay),
+                  String(amount),
+                  String(DAILY_TX_TTL),
+                );
+              return { ok: raw !== -1, source: "redis" };
+            },
+            viaMongo,
+            `enforce:daily:${userPublicId}`,
+          )
+        : await viaMongo();
+
+      if (!r.ok) {
+        throw new BadRequestError(
+          `TRANSFER_EXCEEDS_DAILY_LIMIT_OF_${limits.maxPerDay}`,
         );
-        return passed ? 1 : -1;
-      },
-      `enforce:daily:${userPublicId}`,
-    );
+      }
+      reservation.daily = r.source;
+    }
 
-    logger.info("Daily check final result", { result, userPublicId });
-    if (result === -1)
-      throw new BadRequestError(
-        `TRANSFER_EXCEEDS_DAILY_LIMIT_OF_${limits.maxPerDay}`,
-      );
-  }
-
-  // 3. velocity
-  if (limits.maxTransfersPerHour > 0) {
-    const velocityKey = getVelocityKey(userPublicId);
-
-    // Warm the Redis key from MongoDB if missing (Redis was down)
-    await redis.execute(
-      async () => {
-        await getVelocityCountWithRehydration(userPublicId);
-      },
-      async () => {}, // Redis still down — rehydration skipped, fallback handles it
-      `rehydrate:velocity:${userPublicId}`,
-    );
-
-    const result = await redis.execute(
-      async () => {
-        const client = redis.getClient();
-        const raw = await client.eval(
-          CHECK_AND_INCREMENT_VELOCITY_SCRIPT,
-          1,
-          velocityKey,
-          limits.maxTransfersPerHour.toString(),
-          VELOCITY_TTL.toString(),
-        );
-        logger.info("Velocity Lua result");
-        return raw as number;
-      },
-      async () => {
-        const passed = await atomicIncrementVelocity(
+    if (limits.maxTransfersPerHour > 0) {
+      const velocityKey = getVelocityKey(userPublicId);
+      const viaMongo = async (): Promise<Reserved> => ({
+        ok: await atomicIncrementVelocity(
           userPublicId,
           limits.maxTransfersPerHour,
-        );
-        return passed ? 1 : -1;
-      },
-      `enforce:velocity:${userPublicId}`,
-    );
+        ),
+        source: "mongo",
+      });
 
-    logger.info("Velocity check final result", { result, userPublicId });
-    if (result === -1)
-      throw new BadRequestError(
-        `TRANSFER_VELOCITY_LIMIT_EXCEEDED_MAX_${limits.maxTransfersPerHour}_PER_HOUR`,
-      );
+      const redisReady = await ensureVelocityKey(userPublicId);
+      const r = redisReady
+        ? await redis.execute<Reserved>(
+            async () => {
+              const raw = await redis
+                .getClient()
+                .eval(
+                  CHECK_AND_INCREMENT_VELOCITY_SCRIPT,
+                  1,
+                  velocityKey,
+                  String(limits.maxTransfersPerHour),
+                  String(VELOCITY_TTL),
+                );
+              return { ok: raw !== -1, source: "redis" };
+            },
+            viaMongo,
+            `enforce:velocity:${userPublicId}`,
+          )
+        : await viaMongo();
+
+      if (!r.ok) {
+        throw new BadRequestError(
+          `TRANSFER_VELOCITY_LIMIT_EXCEEDED_MAX_${limits.maxTransfersPerHour}_PER_HOUR`,
+        );
+      }
+      reservation.velocity = r.source;
+    }
+  } catch (err) {
+    // A later check failed: give back what was already reserved,
+    // so rejected attempts don't burn the user's daily quota
+    await rollbackTransactionLimits({
+      userPublicId,
+      amount,
+      currency,
+      reservation,
+    }).catch((e) =>
+      logger.error("Limit rollback failed", {
+        userPublicId,
+        message: e?.message,
+      }),
+    );
+    throw err;
   }
 
-  logger.info("All limit checks passed");
-  return kycTier;
+  return { kycTier, reservation };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// COMMIT
-// Called AFTER session.commitTransaction() succeeds
-// MongoDB first (source of truth), Redis second (best effort)
-// ─────────────────────────────────────────────────────────────────────────────
+// export async function commitTransactionLimits({
+//   userPublicId,
+//   amount,
+//   currency,
+// }: {
+//   userPublicId: string;
+//   amount: number;
+//   currency: string;
+// }): Promise<void> {
+//   // Only MongoDB — Redis was already incremented by Lua during enforce
+//   await commitToDatabase(userPublicId, amount, currency);
+// }
 
-// ─── enforce stays the same — Lua increments Redis (reservation) ──────────
+// ─── rollback decrements Redis if transaction fails after enforce ─────────
 
-// ─── commit only writes MongoDB — Redis already updated by Lua ───────────
 export async function commitTransactionLimits({
   userPublicId,
   amount,
   currency,
+  reservation,
 }: {
   userPublicId: string;
   amount: number;
   currency: string;
-}): Promise<void> {
-  // Only MongoDB — Redis was already incremented by Lua during enforce
-  await commitToDatabase(userPublicId, amount, currency);
+  reservation: Reservation;
+}) {
+  await commitToDatabase(userPublicId, amount, currency, reservation);
 }
 
-// ─── rollback decrements Redis if transaction fails after enforce ─────────
-export async function rollbackTransactionLimits({
-  userPublicId,
-  amount,
-  currency,
-}: {
-  userPublicId: string;
-  amount: number;
-  currency: string;
-}): Promise<void> {
-  const dailyKey = getDailyKey(userPublicId, currency);
-  const velocityKey = getVelocityKey(userPublicId);
+// export async function rollbackTransactionLimits({
+//   userPublicId,
+//   amount,
+//   currency,
+// }: {
+//   userPublicId: string;
+//   amount: number;
+//   currency: string;
+// }): Promise<void> {
+//   const dailyKey = getDailyKey(userPublicId, currency);
+//   const velocityKey = getVelocityKey(userPublicId);
 
-  await redis.execute(
-    async () => {
-      const client = redis.getClient();
-      await client
-        .multi()
-        .incrby(dailyKey, -amount) // undo daily reservation
-        .incrby(velocityKey, -1) // undo velocity reservation
-        .exec();
-    },
-    async () => {
-      logger.warn(
-        "Redis down during rollback — will self-correct on rehydration",
-      );
-    },
-    `rollback:${userPublicId}`,
-  );
-}
+//   await redis.execute(
+//     async () => {
+//       const client = redis.getClient();
+//       await client
+//         .multi()
+//         .incrby(dailyKey, -amount) // undo daily reservation
+//         .incrby(velocityKey, -1) // undo velocity reservation
+//         .exec();
+//     },
+//     async () => {
+//       logger.warn(
+//         "Redis down during rollback — will self-correct on rehydration",
+//       );
+//     },
+//     `rollback:${userPublicId}`,
+//   );
+// }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RECEIVER CAP
 // ─────────────────────────────────────────────────────────────────────────────
+
+export async function rollbackTransactionLimits({
+  userPublicId,
+  amount,
+  currency,
+  reservation,
+}: {
+  userPublicId: string;
+  amount: number;
+  currency: string;
+  reservation: Reservation;
+}) {
+  // Redis reservations: best effort. Over-counting is the safe direction, and the
+  // key is purged and re-seeded from Mongo on Redis recovery.
+  if (reservation.daily === "redis" || reservation.velocity === "redis") {
+    const dailyKey = getDailyKey(userPublicId, currency);
+    const velocityKey = getVelocityKey(userPublicId);
+    await redis.execute(
+      async () => {
+        const m = redis.getClient().multi();
+        if (reservation.daily === "redis") m.incrby(dailyKey, -amount);
+        if (reservation.velocity === "redis") m.incrby(velocityKey, -1);
+        await m.exec();
+        return true;
+      },
+      async () => {
+        logThrottled(
+          "warn",
+          "limits-rollback-redis",
+          "Redis down during limit rollback",
+        );
+        return false;
+      },
+      `rollback:${userPublicId}`,
+    );
+  }
+
+  // Mongo reservations are authoritative: these must succeed (errors propagate)
+  const date = getToday();
+  if (reservation.daily === "mongo") {
+    await TransactionUsage.updateOne(
+      { userPublicId, currency, date },
+      { $inc: { dailyTotal: -amount } },
+    );
+  }
+  if (reservation.velocity === "mongo") {
+    await TransactionUsage.updateOne(
+      { userPublicId, date },
+      { $inc: { hourlyCount: -1 } },
+    );
+  }
+}
 
 export async function enforceReceiverBalanceCap({
   receiverWallet,

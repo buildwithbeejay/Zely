@@ -92,19 +92,17 @@ class FundingService {
     // 3. Look up target wallet
     const targetWallet = await Wallet.findOne({ walletId: targetWalletId });
 
-    if (!targetWallet) throw new NotFoundError("TARGET_WALLET_NOT_FOUND");
+    if (!targetWallet) throw new NotFoundError("Target wallet not found");
 
     if (!FUNDABLE_WALLET_TYPES.includes(targetWallet.type)) {
-      throw new BadRequestError(
-        `WALLET_TYPE_NOT_FUNDABLE_${targetWallet.type}`,
-      );
+      throw new BadRequestError(`WalletType not fundable ${targetWallet.type}`);
     }
     if (targetWallet.currency !== currency)
-      throw new BadRequestError("CURRENCY_MISMATCH");
+      throw new BadRequestError("Currency mismatch");
 
     if (targetWallet.status !== "ACTIVE" && targetWallet.status !== "FROZEN") {
       throw new BadRequestError(
-        `TARGET_WALLET_NOT_ACTIVE_${targetWallet.status}`,
+        `Target wallet not active ${targetWallet.status}`,
       );
     }
 
@@ -116,7 +114,7 @@ class FundingService {
     });
 
     if (!externalLedger) {
-      throw new Error("EXTERNAL_FUNDING_LEDGER_NOT_FOUND");
+      throw new Error("External funding ledger not found");
     }
 
     // 5. Execute via TransactionBuilder
@@ -158,7 +156,7 @@ class FundingService {
       );
 
       if (!updatedWallet) {
-        throw new BadRequestError("WALLET_VERSION_CONFLICT_RETRY");
+        throw new BadRequestError("wallet version conflict retry");
       }
 
       await checkAndAutoRecoverWallet({
@@ -202,11 +200,9 @@ class FundingService {
       await session.commitTransaction();
 
       logger.info("✅ External funding credited", {
-        ref: idempotencyRef,
         source,
         amount,
         currency,
-        targetWalletType: targetWallet.type,
       });
 
       return {

@@ -1,5 +1,6 @@
 import { Queue } from "bullmq";
 import { conn } from "@/workers/bullMq.config";
+import { quietBullErrors } from "@/infrastructure/queues/quiet-bull-errors";
 
 export const EMAIL_QUEUE = "email-queue";
 
@@ -15,5 +16,7 @@ export const emailQueue = new Queue(EMAIL_QUEUE, {
     removeOnFail: false,
   },
 });
+
+quietBullErrors(emailQueue, "email-producer");
 
 export default emailQueue;

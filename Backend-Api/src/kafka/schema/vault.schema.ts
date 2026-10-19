@@ -129,6 +129,16 @@ export const VaultClosedV1Schema = BaseEventSchema.extend({
   }),
 });
 
+export const VaultEditV1Schema = BaseEventSchema.extend({
+  eventType: z.literal("EDIT_VAULT"),
+  version: z.literal(1),
+  aggregateType: z.literal("VAULT"),
+  aggregateId: z.string(),
+
+  payload: z.object({
+    vaultId: z.string(),
+  }),
+});
 /**
  * UNION
  */
@@ -137,6 +147,7 @@ export const VaultEventSchema = z.discriminatedUnion("eventType", [
   VaultCreatedV1Schema,
   VaultCompletedV1Schema,
   VaultClosedV1Schema,
+  VaultEditV1Schema,
   VaultWithdrawalV1Schema,
 ]);
 

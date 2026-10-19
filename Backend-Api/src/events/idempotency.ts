@@ -9,6 +9,12 @@ export interface ProcessedEvent {
   updatedAt: Date;
 }
 
+export interface DLQNote {
+  text: string;
+  addedBy: string;
+  addedAt: Date;
+}
+
 export interface FailedEvent {
   _id?: string;
   topic: string;
@@ -16,6 +22,16 @@ export interface FailedEvent {
   payload: any;
   headers: Record<string, any>;
   error: string;
+  errorType?: "PERMANENT" | "TRANSIENT" | "UNKNOWN";
+  status?: "PENDING" | "REPLAYED" | "REPLAY_FAILED" | "DISMISSED";
+  replayAttempts?: number;
+  replayedAt?: Date | null;
+  replayedBy?: string | null;
+  lastReplayError?: string | null;
+  notes?: DLQNote[];
+  dismissedAt?: Date | null;
+  dismissedBy?: string | null;
+  dismissReason?: string | null;
   failedAt: Date;
 }
 

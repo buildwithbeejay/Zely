@@ -1,16 +1,27 @@
-import { scheduleReconciliation, startReconciliationWorker } from "@/modules/reconciliation/reconciliation.scheduler";
 import { config } from "@/config/index";
-import mongoose from "mongoose";
+import {
+  scheduleReconciliation,
+  startReconciliationWorker,
+} from "@/modules/reconciliation/reconciliation.scheduler";
 import { logger } from "@/shared/utils/logger";
-
+import mongoose from "mongoose";
+import redis from "@/infrastructure/cache/redis.cli";
 
 async function bootstrap() {
   try {
     /** -------------------------
      * CONNECT TO MONGODB
      * ------------------------- */
-    await mongoose.connect(config.database.mongodb.uri)
+    await mongoose.connect(config.database.mongodb.uri);
     logger.info("Poller connected to MongoDB");
+
+    const ok = await redis.connect();
+    if (!ok)
+      logger.warn(
+        "Redis unavailable at startup — worker running in degraded mode",
+      );
+
+    logger.info("Redis initialization completed");
 
     /** -------------------------
      * GRACEFUL SHUTDOWN
@@ -18,12 +29,14 @@ async function bootstrap() {
     process.on("SIGTERM", async () => {
       logger.info("SIGTERM received, shutting down poller");
       await mongoose.disconnect();
+      await redis.disconnect();
       process.exit(0);
     });
 
     process.on("SIGINT", async () => {
       logger.info("SIGINT received, shutting down poller");
       await mongoose.disconnect();
+      await redis.disconnect();
       process.exit(0);
     });
 
@@ -51,7 +64,11 @@ async function bootstrap() {
   }
 }
 
-bootstrap();
+bootstrap().catch((error) => {
+  logger.error("Failed to start reconciliation worker", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+});
 
 // After your DB connections, scheduler init, etc.
 

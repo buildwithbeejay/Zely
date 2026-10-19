@@ -6,6 +6,8 @@ import SystemLedger, { FundUsersRequest } from "./system.ledger";
 import { getRequestContext } from "@/shared/middleware/request.context";
 import BadRequestError from "@/shared/errors/badRequest";
 import { config } from "@/config/index";
+import { recordAdminActivity } from "@/modules/admin/admin.activity.helper";
+import { AdminActivityType } from "@/modules/admin/admin.activity.model";
 
 class FundController implements Controller {
   public path = "/fund";
@@ -21,11 +23,10 @@ class FundController implements Controller {
   }
 
   private fundUsers = asyncWrapper(async (req: IAuthRequest, res: Response) => {
-
     // ✅ Block manual funding in production
-    if (config.app.env === 'production') {
+    if (config.app.env === "production") {
       throw new BadRequestError(
-        'Manual funding is not allowed in production — use Paystack'
+        "Manual funding is not allowed in production — use Paystack",
       );
     }
 
@@ -37,6 +38,14 @@ class FundController implements Controller {
       return res.status(400).send({ error: "Users array is required" });
     }
     const result = await this.fundService.fundSystemLedger(users, context);
+
+    await recordAdminActivity({
+      adminUserId: context.userId ?? "",
+      adminEmail: context.email ?? "",
+      type: AdminActivityType.USER_CREDITED,
+      description: `Credited ${users.length} user(s) via admin funds management`,
+      metadata: { funded: result },
+    });
 
     res.status(200).send({ ok: true, funded: result });
   });

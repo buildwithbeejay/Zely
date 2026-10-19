@@ -57,6 +57,8 @@ export const VAULT_RETRY_LEVELS = [
   { topic: "vault.retry.5", delayMs: 3_600_000 },
 ];
 
+export const VAULT_MAX_RETRIES = VAULT_RETRY_LEVELS.length;
+
 export const REVERSAL_RETRY_LEVELS = [
   { topic: "reversal.retry.1", delayMs: 5_000 },
   { topic: "reversal.retry.2", delayMs: 30_000 },
@@ -64,6 +66,8 @@ export const REVERSAL_RETRY_LEVELS = [
   { topic: "reversal.retry.4", delayMs: 600_000 },
   { topic: "reversal.retry.5", delayMs: 3_600_000 },
 ];
+
+export const REVERSAL_MAX_RETRIES = REVERSAL_RETRY_LEVELS.length;
 
 export const PIN_RETRY_LEVELS = [
   { topic: "pin.retry.1", delayMs: 5_000 }, // 5 seconds
@@ -75,8 +79,25 @@ export const PIN_RETRY_LEVELS = [
 
 export const PIN_MAX_RETRIES = PIN_RETRY_LEVELS.length;
 
-export const REVERSAL_MAX_RETRIES = REVERSAL_RETRY_LEVELS.length;
-export const VAULT_MAX_RETRIES = VAULT_RETRY_LEVELS.length;
+export const RECONCILIATION_RETRY_LEVELS = [
+  { topic: "reconciliation.retry.1", delayMs: 5_000 },
+  { topic: "reconciliation.retry.2", delayMs: 30_000 },
+  { topic: "reconciliation.retry.3", delayMs: 120_000 },
+  { topic: "reconciliation.retry.4", delayMs: 600_000 },
+  { topic: "reconciliation.retry.5", delayMs: 3_600_000 },
+];
+
+export const RECONCILIATION_MAX_RETRIES = RECONCILIATION_RETRY_LEVELS.length;
+
+export const PASSWORD_RETRY_LEVELS = [
+  { topic: "password.retry.1", delayMs: 3_000 },
+  { topic: "password.retry.2", delayMs: 5_000 },
+  { topic: "password.retry.3", delayMs: 7_000 },
+  { topic: "password.retry.4", delayMs: 9_000 },
+  { topic: "password.retry.5", delayMs: 11_000 },
+];
+
+export const PASSWORD_MAX_RETRIES = PASSWORD_RETRY_LEVELS.length;
 
 export function resolveRetryPolicy(aggregateType: string) {
   switch (aggregateType) {
@@ -125,6 +146,12 @@ export function resolveRetryPolicy(aggregateType: string) {
       return {
         levels: REVERSAL_RETRY_LEVELS,
         maxRetries: REVERSAL_MAX_RETRIES,
+      };
+
+    case "RECONCILIATION":
+      return {
+        levels: RECONCILIATION_RETRY_LEVELS,
+        maxRetries: RECONCILIATION_MAX_RETRIES,
       };
 
     default:

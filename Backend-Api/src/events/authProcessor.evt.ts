@@ -144,15 +144,21 @@ export async function processAuthEvent(
 
         break;
       }
+
       case "USER_VERIFY_EMAIL_SUCCESS":
         try {
           // Fetch user
           const user = await User.findOne({
             userId: payload.userId,
-            accountStatus: accountStatus.EMAIL_VERIFIED,
+            accountStatus: {
+              $in: [
+                accountStatus.EMAIL_VERIFIED,
+                accountStatus.PROVISIONING_FAILED,
+              ],
+            },
           }).session(session);
 
-          // if (user?.email === "alan08037896270@outlook.com") {
+          // if (user?.email === "alan@outlook.com") {
           //   throw new TransientError("Simulated transient failure");
           // }
 
@@ -171,7 +177,12 @@ export async function processAuthEvent(
           const updatedUser = await User.findOneAndUpdate(
             {
               userId: payload.userId,
-              accountStatus: accountStatus.EMAIL_VERIFIED,
+              accountStatus: {
+                $in: [
+                  accountStatus.EMAIL_VERIFIED,
+                  accountStatus.PROVISIONING_FAILED,
+                ],
+              },
             },
             { $set: { accountStatus: accountStatus.ACCOUNT_PROVISIONING } },
             { session, new: true },
@@ -435,6 +446,7 @@ export async function processAuthEvent(
           }
           throw new TransientError(`Provisioning failed: ${err.message}`);
         }
+
       default:
         throw new PermanentError(`Unsupported auth event type: ${eventType}`);
     }

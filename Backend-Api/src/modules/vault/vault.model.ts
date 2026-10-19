@@ -67,6 +67,7 @@ export interface VaultDocument extends Document {
   vaultType: "FLEXIBLE" | "LOCKED" | "TARGET";
   locked: boolean;
   lockUntil?: Date;
+  concurrencyLockExpiry: Date | null;
 }
 
 const VaultSchema = new Schema(
@@ -123,6 +124,7 @@ const VaultSchema = new Schema(
       min: 0,
     },
 
+    concurrencyLockExpiry: { type: Date, default: null },
     targetDeadline: {
       type: Date,
     },

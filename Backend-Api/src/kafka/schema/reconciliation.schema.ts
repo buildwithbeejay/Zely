@@ -1,35 +1,111 @@
-// reconciliation.schema.ts
-import z from "zod";
+import { z } from "zod";
 import { BaseEventSchema } from "./index.schema";
 
-const ReconciliationDriftSchema = BaseEventSchema.extend({
+// ─── RECONCILIATION_DRIFT_DETECTED ───────────────────────────────────────────
+// This event is emitted in four different situations, each with a different
+// payload shape. We discriminate on payload.type.
+
+const LedgerDriftPayloadSchema = z.object({
+  type: z.literal("LEDGER_DRIFT"),
+  ledgerAccountPublicId: z.string(),
+  ownerType: z.string(),
+  ownerPublicId: z.string(),
+  currency: z.string(),
+  cachedBalance: z.number(),
+  trueBalance: z.number(),
+  drift: z.number(),
+  severity: z.string(),
+  action: z.string(),
+  autoFrozen: z.boolean(),
+});
+
+const SystemInvariantPayloadSchema = z.object({
+  type: z.literal("SYSTEM_INVARIANT_BREACH"),
+  totalWalletBalance: z.number(),
+  totalLedgerNet: z.number(),
+  invariantDrift: z.number(),
+  severity: z.literal("CRITICAL"),
+});
+
+const PaymentSettlementPayloadSchema = z.object({
+  type: z.literal("PAYMENT_SETTLEMENT"),
+  date: z.string(),
+  totalChecked: z.number(),
+  driftsFound: z.number(),
+  drifts: z.array(z.any()),
+});
+
+const DriftEscalationPayloadSchema = z.object({
+  type: z.literal("DRIFT_ESCALATION"),
+  runId: z.string(),
+  unresolvedCount: z.number(),
+  oldestDetectedAt: z.union([z.string(), z.date()]).optional(),
+  severity: z.literal("HIGH"),
+  message: z.string(),
+});
+
+export const ReconciliationDriftDetectedV1Schema = BaseEventSchema.extend({
   eventType: z.literal("RECONCILIATION_DRIFT_DETECTED"),
-  aggregateType: z.literal("RECONCILIATION"),
+  version: z.literal(1),
+  aggregateType: z.string(),
+  aggregateId: z.string(),
+  payload: z.discriminatedUnion("type", [
+    LedgerDriftPayloadSchema,
+    SystemInvariantPayloadSchema,
+    PaymentSettlementPayloadSchema,
+    DriftEscalationPayloadSchema,
+  ]),
+});
+
+// ─── RECONCILIATION_RUN_COMPLETED ────────────────────────────────────────────
+
+export const ReconciliationRunCompletedV1Schema = BaseEventSchema.extend({
+  eventType: z.literal("RECONCILIATION_RUN_COMPLETED"),
+  version: z.literal(1),
+  aggregateType: z.literal("RECONCILIATION_RUN"),
+  aggregateId: z.string(),
   payload: z.object({
-    walletId: z.string(),
-    userPublicId: z.string().optional(),
-    driftAmount: z.number(),
-    direction: z.string(),
-    walletBalance: z.number(),
-    ledgerBalance: z.number(),
-    autoFrozen: z.boolean().optional(),
+    runId: z.string(),
+    accountsChecked: z.number(),
+    driftsFound: z.number(),
+    durationMs: z.number(),
+    triggeredBy: z.enum(["SCHEDULED", "MANUAL"]),
   }),
 });
 
-const ReconciliationRunSchema = BaseEventSchema.extend({
-  eventType: z.literal("RECONCILIATION_RUN_COMPLETED"),
-  aggregateType: z.literal("RECONCILIATION"),
+// ─── RECONCILIATION_DRIFT_RESOLVED ───────────────────────────────────────────
+
+export const ReconciliationDriftResolvedV1Schema = BaseEventSchema.extend({
+  eventType: z.literal("RECONCILIATION_DRIFT_RESOLVED"),
+  version: z.literal(1),
+  aggregateType: z.literal("RECONCILIATION_RESOLUTION"),
+  aggregateId: z.string(),
   payload: z.object({
-    totalChecked: z.number(),
-    driftsFound: z.number(),
-    walletsFrozen: z.number(),
-    durationMs: z.number().optional(),
+    runId: z.string(),
+    ledgerAccountPublicId: z.string(),
+    resolutionType: z.string(),
+    notes: z.string().optional(),
+    resolvedBy: z.string(),
+    correctionMethod: z.string().optional(),
+    compensatingEntryRef: z.string().optional(),
+    selfHealed: z.boolean().optional(),
+    recordedDrift: z.number().optional(),
+    liveStateAtResolution: z
+      .object({
+        liveCachedBalance: z.number(),
+        liveTrueBalance: z.number(),
+        liveDrift: z.number(),
+      })
+      .optional(),
   }),
 });
+
+// ─── UNION ───────────────────────────────────────────────────────────────────
 
 export const ReconciliationEventSchema = z.discriminatedUnion("eventType", [
-  ReconciliationDriftSchema,
-  ReconciliationRunSchema,
+  ReconciliationDriftDetectedV1Schema,
+  ReconciliationRunCompletedV1Schema,
+  ReconciliationDriftResolvedV1Schema,
 ]);
 
 export type ReconciliationEvent = z.infer<typeof ReconciliationEventSchema>;

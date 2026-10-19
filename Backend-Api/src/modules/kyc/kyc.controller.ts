@@ -12,6 +12,7 @@ import { StatusCodes } from "http-status-codes";
 import { UserRole } from "../auth/authinterface";
 import KycService from "./kyc.service";
 import kycValidation from "./kyc.validation";
+import { kycResubmitLimiters } from "@/infrastructure/helpers/ratelimiter";
 
 class KycController implements Controller {
   public path = "/kyc";
@@ -27,21 +28,23 @@ class KycController implements Controller {
     this.route.post(
       `${this.path}/upload-signature`,
       requireAuth,
+
       this.getUploadSignature,
     );
     this.route.post(
       `${this.path}/upgrade-to-tier-2`,
       requireAuth,
+      kycResubmitLimiters,
       validateRequest(kycValidation.submitTier2, "body"),
       this.submitTier2,
     );
     this.route.post(
       `${this.path}/upgrade-to-tier-3`,
       requireAuth,
+      kycResubmitLimiters,
       validateRequest(kycValidation.submitTier3, "body"),
       this.submitTier3,
     );
-    this.route.get(`${this.path}/my-status`, requireAuth, this.getMyStatus);
 
     // Admin endpoints
     this.route.get(

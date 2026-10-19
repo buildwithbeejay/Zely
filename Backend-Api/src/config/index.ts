@@ -45,6 +45,7 @@ const envSchema = z.object({
   LASTUSED_PREFIX: z.string().min(1),
   SESSION_LATEST_PREFIX: z.string().min(1),
   SESSION_CONFIRM_PREFIX: z.string().min(1),
+  sessionAccessJtiPrefix: z.string().default("zely:auth:session:access-jti:"),
 
   // Kafka (events)
   KAFKA_BROKERS: z.string().min(1),
@@ -131,6 +132,7 @@ export const config = {
     lastusedPrefix: env.LASTUSED_PREFIX,
     sessionLatestPrefix: env.SESSION_LATEST_PREFIX,
     SESSION_CONFIRM_PREFIX: env.SESSION_CONFIRM_PREFIX,
+    sessionAccessJtiPrefix: env.sessionAccessJtiPrefix,
   },
 
   kafka: {

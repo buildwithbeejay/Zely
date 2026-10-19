@@ -4,11 +4,42 @@ import { logger } from "@/shared/utils/logger";
 import { withRedisBreaker } from "@/infrastructure/resilience/breakers/redis.breaker";
 import { rehydrateBlacklistOnRedisReconnect } from "@/infrastructure/helpers/session.helper";
 
+import { logThrottled } from "@/shared/utils/throttled-log";
+import { memoryRateLimitStore, RateLimitHit } from "./memory-rate-limit.store";
+
 class RedisConnection {
   private client: Redis | null = null;
   private isConnected: boolean = false;
   private reconnectAttempts: number = 0;
-  private readonly MAX_RECONNECT_ATTEMPTS = 5;
+
+  private wasUp = false;
+  private downSince: number | null = null;
+
+  private readonly name: string;
+  private readonly db?: number;
+  private readonly rehydrateOnReady: boolean;
+  private readonly commandTimeout: number;
+
+  constructor(
+    opts: {
+      name?: string;
+      db?: number;
+      rehydrateOnReady?: boolean;
+      commandTimeout?: number;
+    } = {},
+  ) {
+    this.name = opts.name ?? "main";
+    this.db = opts.db;
+    this.rehydrateOnReady = opts.rehydrateOnReady ?? true;
+    this.commandTimeout = opts.commandTimeout ?? 1000;
+  }
+
+  private static readonly RATE_LIMIT_LUA = `
+local c = redis.call('INCR', KEYS[1])
+if c == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+local t = redis.call('PTTL', KEYS[1])
+if t < 0 then redis.call('PEXPIRE', KEYS[1], ARGV[1]); t = tonumber(ARGV[1]) end
+return {c, t}`;
 
   // ─────────────────────────────────────────────
   // CORE: Single entry point for all Redis ops
@@ -22,9 +53,11 @@ class RedisConnection {
   ): Promise<T> {
     // client never initialized at all — skip breaker, nothing to count
     if (!this.client) {
-      logger.warn("⚠️ Redis client not initialized — skipping to fallback", {
-        context,
-      });
+      logThrottled(
+        "warn",
+        `${this.name}-redis-not-init`,
+        "Redis client not initialized — using fallbacks",
+      );
       return fallback();
     }
 
@@ -60,63 +93,43 @@ class RedisConnection {
   // CONNECTION
   // ─────────────────────────────────────────────
 
-  async connect(): Promise<void> {
+  async connect(): Promise<boolean> {
     try {
       this.client = new Redis({
         host: config.redis.host,
         port: config.redis.port,
         password: config.redis.password,
-        db: config.redis.db,
-
-        // Exponential backoff — stop after MAX_RECONNECT_ATTEMPTS
-        retryStrategy: (times: number) => {
-          const delay = Math.min(times * 500, 10000); // max 10s between retries
-          logger.warn(`🔄 Redis: Reconnecting... attempt ${times}`, { delay });
-          return delay; // never return null — always keep trying
-        },
-
-        reconnectOnError: (err) => {
-          const targetErrors = ["READONLY", "ECONNREFUSED"];
-          return targetErrors.some((e) => err.message.includes(e));
-        },
-
+        db: this.db ?? config.redis.db,
+        retryStrategy: (times) => Math.min(times * 500, 10_000), // no logging here
         maxRetriesPerRequest: config.redis.maxRetriesPerRequest,
         enableReadyCheck: config.redis.enableReadyCheck,
-
-        // CRITICAL: Reject commands immediately when disconnected
-        // Do NOT queue them — in fintech we need the fallback to kick in instantly
-        // not silently wait for Redis to come back
+        commandTimeout: this.commandTimeout,
         enableOfflineQueue: false,
-
-        connectTimeout: 10000,
-        keepAlive: 30000,
-
-        // App starts even if Redis is down
-        // execute() handles unavailability gracefully
+        connectTimeout: 10_000,
+        keepAlive: 30_000,
         lazyConnect: true,
       });
-
       this.setupEventListeners();
 
-      // Attempt connection — but don't crash the app if it fails
-      await this.client.connect().catch((err) => {
-        logger.error(
-          "❌ Redis: Initial connection failed — app will start in degraded mode",
-          {
-            message: err.message,
-          },
-        );
-        // Not throwing here — execute() + circuit breaker handles fallbacks
-      });
+      const ok = await this.client
+        .connect()
+        .then(() => true)
+        .catch((err: any) => {
+          const code =
+            err?.code ?? err?.errors?.[0]?.code ?? err?.message ?? "unknown";
+          logger.error(
+            `❌ Redis: initial connection failed (${code}) — degraded mode`,
+          );
+          return false;
+        });
 
-      if (this.isConnected) {
-        await this.testConnection();
-      }
+      if (ok) await this.testConnection();
+      return ok;
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      logger.error("❌ Redis: Unexpected error during connect:", errorMessage);
-      // Still not throwing — degrade gracefully
+      logger.error("❌ Redis: unexpected error during connect", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return false;
     }
   }
 
@@ -139,43 +152,79 @@ class RedisConnection {
   // ─────────────────────────────────────────────
 
   private setupEventListeners(): void {
-    this.redis.on("connect", () => {
-      logger.info("🔗 Redis: Connection established");
-    });
-
-    this.redis.on("ready", () => {
+    this.redis.on("ready", async () => {
       this.isConnected = true;
       this.reconnectAttempts = 0;
-      logger.info("✅ Redis: Ready to accept commands");
+
+      if (this.downSince) {
+        const secs = Math.round((Date.now() - this.downSince) / 1000);
+        logger.info(`✅ Redis[${this.name}]: recovered after ${secs}s`);
+        this.downSince = null;
+      } else {
+        logger.info(`✅ Redis[${this.name}]: ready`);
+      }
+      this.wasUp = true;
+
+      // only the main instance rehydrates the blacklist
+      if (this.rehydrateOnReady) {
+        await rehydrateBlacklistOnRedisReconnect().catch((e) =>
+          logger.error("Blacklist rehydrate failed", { message: e?.message }),
+        );
+      }
     });
 
-    this.redis.on("error", (err) => {
-      // Do NOT throw here — throwing inside an event handler crashes the process
-      // ioredis handles reconnection internally
+    this.redis.on("error", (err: any) => {
       this.isConnected = false;
-      logger.error("❌ Redis: Error:", err.message);
+      const code =
+        err?.code ??
+        err?.errors?.map((e: any) => e.code).join(",") ??
+        err?.message ??
+        "unknown";
+      logThrottled(
+        "error",
+        `${this.name}-redis-error`,
+        `❌ Redis[${this.name}] unavailable: ${code}`,
+      );
     });
 
     this.redis.on("close", () => {
+      if (this.wasUp) {
+        logger.warn(
+          `🔌 Redis[${this.name}]: connection lost — using fallbacks`,
+        );
+        this.wasUp = false;
+        this.downSince = Date.now();
+      }
       this.isConnected = false;
-      logger.warn("🔌 Redis: Connection closed");
     });
 
     this.redis.on("reconnecting", () => {
-      this.reconnectAttempts++;
-      logger.warn(`🔄 Redis: Reconnecting...`, {
-        attempt: this.reconnectAttempts,
-      });
+      this.reconnectAttempts++; // count only, no log
     });
 
     this.redis.on("end", () => {
       this.isConnected = false;
-      logger.warn("⚠️ Redis: Connection ended");
     });
+  }
 
-    this.redis.on("ready", async () => {
-      await rehydrateBlacklistOnRedisReconnect().catch(logger.error);
-    });
+  async rateLimitHit(key: string, windowMs: number): Promise<RateLimitHit> {
+    return this.execute<RateLimitHit>(
+      async () => {
+        const [count, ttl] = (await this.redis.eval(
+          RedisConnection.RATE_LIMIT_LUA,
+          1,
+          key,
+          windowMs,
+        )) as [number, number];
+        return { count, resetInMs: Math.max(0, ttl) };
+      },
+      async () => memoryRateLimitStore.hit(key, windowMs),
+      `ratelimit:${key}`,
+    );
+  }
+
+  private fallbackWarn(op: string, msg: string) {
+    logThrottled("warn", `${this.name}-fallback-${op}`, msg);
   }
 
   // ─────────────────────────────────────────────
@@ -203,7 +252,7 @@ class RedisConnection {
         return true;
       },
       async () => {
-        logger.warn("Redis unavailable — set operation skipped", { key });
+        this.fallbackWarn("set", "Redis unavailable — set skipped");
         return false;
       },
       `set:${key}`,
@@ -230,7 +279,7 @@ class RedisConnection {
         return value;
       },
       async () => {
-        logger.warn("Redis unavailable — get returning null", { key });
+        this.fallbackWarn("get", "Redis unavailable — get returning null");
         return null;
       },
       `get:${key}`,
@@ -243,7 +292,7 @@ class RedisConnection {
     return this.execute(
       () => this.redis.del(key),
       async () => {
-        logger.warn("Redis unavailable — delete skipped", { key });
+        this.fallbackWarn("delete", "Redis unavailable — delete skipped");
         return 0;
       },
       `delete:${key}`,
@@ -256,7 +305,10 @@ class RedisConnection {
     return this.execute(
       async () => (await this.redis.exists(key)) === 1,
       async () => {
-        logger.warn("Redis unavailable — exists returning false", { key });
+        this.fallbackWarn(
+          "exists",
+          "Redis unavailable — exists returning false",
+        );
         return false;
       },
       `exists:${key}`,
@@ -271,7 +323,7 @@ class RedisConnection {
     return this.execute(
       () => this.redis.expire(key, seconds),
       async () => {
-        logger.warn("Redis unavailable — expire skipped", { key, seconds });
+        this.fallbackWarn("expire", "Redis unavailable — expire skipped");
         return 0;
       },
       `expire:${key}`,
@@ -286,11 +338,10 @@ class RedisConnection {
     return this.execute(
       () => this.redis.incrby(key, amount),
       async () => {
-        // ⚠️ Never return 0 here
-        // A silently reset counter = limit bypass = compliance breach
-        logger.error(
+        logThrottled(
+          "error",
+          `${this.name}-fallback-increment`,
           "Redis unavailable — increment rejected to prevent silent bypass",
-          { key },
         );
         throw new Error("Redis unavailable — increment operation rejected");
       },
@@ -313,7 +364,7 @@ class RedisConnection {
         });
       },
       async () => {
-        logger.warn("Redis unavailable — mget returning nulls", { keys });
+        this.fallbackWarn("mget", "Redis unavailable — mget returning nulls");
         return keys.map(() => null as T | null);
       },
       `mget:${keys.join(",")}`,
@@ -386,5 +437,12 @@ class RedisConnection {
   }
 }
 
-const redis = new RedisConnection();
+const redis = new RedisConnection({ name: "main" });
 export default redis;
+
+export const rateLimitRedis = new RedisConnection({
+  name: "ratelimit",
+  db: 2,
+  rehydrateOnReady: false,
+  commandTimeout: 300,
+});

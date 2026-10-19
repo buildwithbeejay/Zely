@@ -8,6 +8,7 @@ import {
   AuditStatus,
 } from "./audit.interface";
 import { IRequestContext } from "@/config/interfaces/request.interface";
+import { socketRegistry } from "@/infrastructure/websockets/socket.registry";
 
 class AuditLogger {
   private static readonly ATTEMPT_TRACKING_ACTIONS = [
@@ -51,9 +52,22 @@ class AuditLogger {
       });
     }
 
-    // OPTIONAL: Send to Kafka for real-time processing
-    // Uncomment when Kafka is ready
+    try {
+      socketRegistry.emitToAdmins("system:log", {
+        action: entry.action,
+        status: entry.status,
+        severity: entry.severity,
+        trackedEmail: entry.trackedEmail,
+        userId: entry.userId,
+        createdAt: entry.createdAt,
+      });
+    } catch (err) {
+      // Non-fatal — never block audit logging because of socket emit
+    }
   }
+
+  // OPTIONAL: Send to Kafka for real-time processing
+  // Uncomment when Kafka is ready
 
   // context: IRequestContext,
   // params: {

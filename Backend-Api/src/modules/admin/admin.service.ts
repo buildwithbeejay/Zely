@@ -222,6 +222,16 @@ class AdminUserService {
       UserTransactionModel.countDocuments(filter),
     ]);
 
+    const seen = new Set<string>();
+    const deduped = docs.filter((t: any) => {
+      if (t.category === "VAULT_TRANSFER") {
+        if (seen.has(t.transactionRef)) return false;
+        seen.add(t.transactionRef);
+        return t.direction === "debit";
+      }
+      return true;
+    });
+
     // Batch-resolve user names for the page of results (avoids N+1 queries)
     const userIds = [...new Set(docs.map((d: any) => d.userId))];
     const users = await User.find({ userId: { $in: userIds } })
@@ -251,7 +261,7 @@ class AdminUserService {
     );
 
     return {
-      transactions: docs.map((t: any) => ({
+      transactions: deduped.map((t: any) => ({
         transactionId: t.transactionRef ?? t.eventId,
         userId: t.userId,
         userName: userMap.get(t.userId)?.name ?? "Unknown user",

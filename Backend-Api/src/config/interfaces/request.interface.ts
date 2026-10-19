@@ -20,6 +20,7 @@ export interface JwtUser {
   role: string;
   deviceId: string;
   [key: string]: any;
+  jti: string;
 }
 
 export interface IAuthRequest extends Request {

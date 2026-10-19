@@ -19,6 +19,7 @@ import ReversalController from "@/modules/reversal /reversal.controller";
 import AdminUserController from "@/modules/admin/admin.controller";
 import AdminAuditController from "@/modules/admin/admin.audit.controller";
 import FeeAdminController from "@/modules/fee/fee.admin.controller";
+import DLQAdminController from "@/modules/admin/dlq/dlq.admin.controller";
 
 let isReady = false;
 
@@ -42,6 +43,7 @@ const app = new App(
     new AdminUserController(),
     new AdminAuditController(),
     new FeeAdminController(),
+    new DLQAdminController(),
   ],
   Number(config.app.port),
 );

@@ -1,7 +1,11 @@
 // src/modules/payments/payment.controller.ts
 import Controller from "@/config/interfaces/controller.interfaces";
 import { IAuthRequest } from "@/config/interfaces/request.interface";
-import { paymentReferenceLimiter } from "@/infrastructure/helpers/ratelimiter";
+import {
+  paymentInitLimiters,
+  paymentListLimiter,
+  paymentReferenceLimiter,
+} from "@/infrastructure/helpers/ratelimiter";
 import asyncWrapper from "@/shared/middleware/async.wrapper";
 import { requireAuth } from "@/shared/middleware/auth.middleware";
 import { getRequestContext } from "@/shared/middleware/request.context";
@@ -30,7 +34,7 @@ class PaymentController implements Controller {
     this.route.post(
       `${this.path}/initialize`,
       requireAuth,
-      //...paymentInitLimiters, // ← add after auth, before validation
+      paymentInitLimiters, // ← add after auth, before validation
       validateRequest(paymentValidation.initialize, "body"),
       this.initializePayment,
     );
@@ -52,7 +56,7 @@ class PaymentController implements Controller {
     this.route.get(
       `${this.path}`,
       requireAuth,
-      paymentReferenceLimiter,
+      paymentListLimiter,
       this.listMyPayments,
     );
   }

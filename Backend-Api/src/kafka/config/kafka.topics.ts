@@ -6,6 +6,7 @@ export const TOPICS = {
   AUTH_EVENTS_DLQ: "auth.events.dlq",
 
   PASSWORD_EVENTS: "password.events",
+  PASSWORD_EVENTS_DLQ: "password.events.dlq",
 
   // ======================
   // TRANSACTION DOMAIN

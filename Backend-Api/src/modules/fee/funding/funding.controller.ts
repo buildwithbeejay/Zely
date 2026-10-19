@@ -12,7 +12,8 @@ import { generateEventId } from "@/shared/utils/id.generator";
 import BadRequestError from "@/shared/errors/badRequest";
 import { Wallet, WalletType } from "@/modules/wallet/wallet.model";
 import fundingValidation from "./funding.validation";
-
+import { AdminActivityType } from "@/modules/admin/admin.activity.model";
+import { recordAdminActivity } from "@/modules/admin/admin.activity.helper";
 
 class FundingController implements Controller {
   public path = "/admin/funding";
@@ -29,47 +30,58 @@ class FundingController implements Controller {
       requireAuth,
       // isAdmin,
       validateRequest(fundingValidation.adminTopUp, "body"),
-      this.adminTopUpTreasury
+      this.adminTopUpTreasury,
     );
   }
 
-  private adminTopUpTreasury = asyncWrapper(async (req: IAuthRequest, res: Response) => {
-    // SAFETY: only allow in non-production until Paystack is wired
-    if (config.app.env === "production") {
-      throw new BadRequestError("MANUAL_TOPUP_DISABLED_IN_PRODUCTION");
-    }
+  private adminTopUpTreasury = asyncWrapper(
+    async (req: IAuthRequest, res: Response) => {
+      // SAFETY: only allow in non-production until Paystack is wired
+      if (config.app.env === "production") {
+        throw new BadRequestError("MANUAL_TOPUP_DISABLED_IN_PRODUCTION");
+      }
 
-    const { amount, currency, reason } = req.body;
-    const ctx = getRequestContext(req);
-    const adminId = (req as any).user?.sub;
+      const { amount, currency, reason } = req.body;
+      const ctx = getRequestContext(req);
+      const adminId = (req as any).user?.sub;
 
-    // Find treasury wallet for this currency
-    const treasuryWallet = await Wallet.findOne({
-      userPublicId: "SYSTEM_USER",
-      type: WalletType.SYSTEM_TREASURY,  // adjust if your enum names differ — should be TREASURY
-      currency,
-    });
+      // Find treasury wallet for this currency
+      const treasuryWallet = await Wallet.findOne({
+        userPublicId: "SYSTEM_USER",
+        type: WalletType.SYSTEM_TREASURY, // adjust if your enum names differ — should be TREASURY
+        currency,
+      });
 
-    if (!treasuryWallet) {
-      throw new BadRequestError("TREASURY_WALLET_NOT_FOUND");
-    }
+      if (!treasuryWallet) {
+        throw new BadRequestError("TREASURY_WALLET_NOT_FOUND");
+      }
 
-    // Generate a deterministic-ish providerReference for this manual top-up
-    const providerReference = `ADMIN_TOPUP_${Date.now()}_${generateEventId()}`;
+      // Generate a deterministic-ish providerReference for this manual top-up
+      const providerReference = `ADMIN_TOPUP_${Date.now()}_${generateEventId()}`;
 
-    const result = await this.fundingService.creditFromExternalSource({
-      targetWalletId: treasuryWallet.walletId,
-      amount,
-      currency,
-      source: FundingSource.ADMIN_MANUAL,
-      providerReference,
-      initiatedByUserId: adminId,
-      context: ctx,
-      metadata: { reason },
-    });
+      const result = await this.fundingService.creditFromExternalSource({
+        targetWalletId: treasuryWallet.walletId,
+        amount,
+        currency,
+        source: FundingSource.ADMIN_MANUAL,
+        providerReference,
+        initiatedByUserId: adminId,
+        context: ctx,
+        metadata: { reason },
+      });
 
-    return res.status(StatusCodes.OK).json({ ok: true, data: result });
-  });
+      // Record admin activity before returning
+      await recordAdminActivity({
+        adminUserId: adminId,
+        adminEmail: ctx.email ?? "",
+        type: AdminActivityType.TREASURY_TOPPED_UP,
+        description: `Topped up treasury with ₦${amount} — ${reason}`,
+        metadata: { amount, currency, reason },
+      });
+
+      return res.status(StatusCodes.OK).json({ ok: true, data: result });
+    },
+  );
 }
 
 export default FundingController;

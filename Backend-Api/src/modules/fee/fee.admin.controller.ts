@@ -86,6 +86,7 @@ class FeeAdminController implements Controller {
     const { accrualId } = req.params;
     const { reason } = req.body;
     const adminUserId = req.user?.userId;
+    const adminEmail = req.user?.email;
 
     if (!reason || reason.trim().length < 5) {
       throw new BadRequestError("Reason must be at least 5 characters");
@@ -94,6 +95,7 @@ class FeeAdminController implements Controller {
     const result = await this.feeAdminService.waiveFee(
       accrualId,
       adminUserId!,
+      adminEmail!,
       reason,
     );
     res.status(200).json({ ok: true, data: result });
@@ -102,10 +104,12 @@ class FeeAdminController implements Controller {
   private sweepAccruals = asyncWrapper(
     async (req: IAuthRequest, res: Response) => {
       const adminUserId = req.user?.userId;
+      const adminEmail = req.user?.email;
       const { currency } = req.body;
       const result = await this.feeAdminService.sweepAccruals(
         adminUserId!,
         currency ?? "NGN",
+        adminEmail!,
       );
       res.status(200).json({ ok: true, data: result });
     },
@@ -131,12 +135,19 @@ class FeeAdminController implements Controller {
 
   private updateSchedule = asyncWrapper(
     async (req: IAuthRequest, res: Response) => {
+      const adminEmail = req.user?.email;
+      const adminUserId = req.user?.userId;
       const { id } = req.params;
       const { tiers, isActive } = req.body;
-      const result = await this.feeAdminService.updateSchedule(id, {
-        tiers,
-        isActive,
-      });
+      const result = await this.feeAdminService.updateSchedule(
+        id,
+        {
+          tiers,
+          isActive,
+        },
+        adminEmail!,
+        adminUserId!,
+      );
       res.status(200).json({ ok: true, data: result });
     },
   );

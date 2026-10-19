@@ -466,7 +466,6 @@ class userService {
     if (query.walletType) filter.walletType = query.walletType;
     if (query.status) filter.status = query.status;
 
-
     // Add to the filter
     const [transactions, total] = await Promise.all([
       UserTransactionModel.find(filter)
@@ -476,9 +475,20 @@ class userService {
         .lean(),
       UserTransactionModel.countDocuments(filter),
     ]);
+
+    const seen = new Set<string>();
+    const deduped = transactions.filter((t: any) => {
+      if (t.category === "VAULT_TRANSFER") {
+        if (seen.has(t.transactionRef)) return false;
+        seen.add(t.transactionRef);
+        return t.direction === "debit"; // keep only the debit side
+      }
+      return true;
+    });
+
     return {
-      transactions: transactions.map((t) => ({
-        transactionId: t.transactionRef ?? t.eventId, // ← use eventId as transactionId
+      transactions: deduped.map((t: any) => ({
+        transactionId: t.transactionRef ?? t.eventId,
         rowKey: `${t.eventId}_${t.walletType}`,
         direction: t.direction,
         amount: t.amount,

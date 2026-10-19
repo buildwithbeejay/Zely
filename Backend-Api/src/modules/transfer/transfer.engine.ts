@@ -14,7 +14,6 @@ import TransactionBuilder from "../ledger/ledger.transaction.builder";
 
 import { lockAccountToPreventConcurrency } from "../helpers/resolvers";
 
-import { generateAccrualId } from "@/shared/utils/id.generator";
 import { AccountDocument } from "../account/account.interface";
 import { Account } from "../account/account.model";
 import {
@@ -26,7 +25,6 @@ import {
 import { LedgerEntryNature } from "../ledger/ledger.entry.model";
 import { VaultDocument } from "../vault/vault.model";
 import { Wallet, WalletDocument } from "../wallet/wallet.model";
-import { FeeAccrual, FeeCategory } from "@/modules/fee/fee.accrual.model";
 
 type BaseTransferInput = {
   senderAccount: AccountDocument;
@@ -151,7 +149,7 @@ class TransferEngine {
 
     const txn = await builder.commit(session);
 
-    // ─── FEE LEDGER ENTRIES ────────────────────────────────────────────────
+    // ─── FEE LEDGER ENTRIES
     if (fee > 0) {
       // Look up revenue ledger account
       const revenueLedgerAccount = await LedgerAccount.findOne({

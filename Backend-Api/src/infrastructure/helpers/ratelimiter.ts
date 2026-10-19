@@ -1,4 +1,3 @@
-import Redis from "ioredis";
 import {
   getKeyByIP,
   getKeyByEmail,
@@ -9,25 +8,11 @@ import {
 import { createRateLimitMiddleware } from "@/shared/middleware/ratelimit.middleware";
 import { Response, Request, NextFunction } from "express";
 import { logger } from "@/shared/utils/logger";
-// ============================================================================
-// REDIS CLIENT FOR RATE LIMITING
-// Separate DB so rate-limit keys don't collide with other Redis usage.
-// ============================================================================
-
-const redis = new Redis({
-  host: process.env.REDIS_HOST || "localhost",
-  port: parseInt(process.env.REDIS_PORT || "6379"),
-  password: process.env.REDIS_PASSWORD,
-  db: 2,
-  retryStrategy: (times) => Math.min(times * 50, 2000),
-});
-
-redis.on("connect", () => console.log("✅ Rate-limit Redis connected"));
-redis.on("error", (err) => console.error("❌ Rate-limit Redis error:", err));
 
 const FIFTEEN_MIN = 15 * 60 * 1000;
 const ONE_HOUR = 60 * 60 * 1000;
 const ONE_MINUTE = 60 * 1000;
+const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
 // ============================================================================
 // LOGIN — Critical
@@ -36,7 +21,7 @@ const ONE_MINUTE = 60 * 1000;
 // ============================================================================
 
 export const loginLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 8,
     keyGenerator: getKeyByIPAndEmail,
@@ -44,7 +29,7 @@ export const loginLimiters = [
     failMode: "closed",
     message: "Too many login attempts.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 30,
     keyGenerator: getKeyByIP,
@@ -60,7 +45,7 @@ export const loginLimiters = [
 // ============================================================================
 
 export const registerLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 5,
     keyGenerator: getKeyByIP,
@@ -78,7 +63,7 @@ export const registerLimiters = [
 // ============================================================================
 
 export const verifyEmailLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 10,
     keyGenerator: getKeyByIPAndEmail,
@@ -86,7 +71,7 @@ export const verifyEmailLimiters = [
     failMode: "closed",
     message: "Too many verification attempts. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 30,
     keyGenerator: getKeyByIP,
@@ -103,7 +88,7 @@ export const verifyEmailLimiters = [
 // ============================================================================
 
 export const resendVerificationLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 5,
     keyGenerator: getKeyByIPAndEmail,
@@ -111,7 +96,7 @@ export const resendVerificationLimiters = [
     failMode: "closed",
     message: "Too many resend requests. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 10,
     keyGenerator: getKeyByEmail,
@@ -119,7 +104,7 @@ export const resendVerificationLimiters = [
     failMode: "closed",
     message: "Too many resend requests. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 20,
     keyGenerator: getKeyByIP,
@@ -136,7 +121,7 @@ export const resendVerificationLimiters = [
 // ============================================================================
 
 export const forgotPasswordLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 8,
     keyGenerator: getKeyByIPAndEmail,
@@ -144,7 +129,7 @@ export const forgotPasswordLimiters = [
     failMode: "closed",
     message: "Too many password reset requests. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 15,
     keyGenerator: getKeyByEmail,
@@ -152,7 +137,7 @@ export const forgotPasswordLimiters = [
     failMode: "closed",
     message: "Too many password reset requests. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 30,
     keyGenerator: getKeyByIP,
@@ -168,7 +153,7 @@ export const forgotPasswordLimiters = [
 // ============================================================================
 
 export const confirmResetCodeLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 10,
     keyGenerator: getKeyByIPAndEmail,
@@ -176,7 +161,7 @@ export const confirmResetCodeLimiters = [
     failMode: "closed",
     message: "Too many verification attempts. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 30,
     keyGenerator: getKeyByIP,
@@ -193,7 +178,7 @@ export const confirmResetCodeLimiters = [
 // ============================================================================
 
 export const resetPasswordLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 5,
     keyGenerator: getKeyByIPAndEmail,
@@ -201,7 +186,7 @@ export const resetPasswordLimiters = [
     failMode: "closed",
     message: "Too many password reset attempts. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 10,
     keyGenerator: getKeyByIP,
@@ -213,7 +198,7 @@ export const resetPasswordLimiters = [
 
 export const changePasswordLimiters = [
   // Per IP + email: 5 attempts per 15 minutes
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 5,
     keyGenerator: getKeyByIPAndEmail,
@@ -222,7 +207,7 @@ export const changePasswordLimiters = [
     message: "Too many password change attempts. Please try again later.",
   }),
   // Per email: 10 attempts per hour
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 10,
     keyGenerator: getKeyByEmail,
@@ -231,7 +216,7 @@ export const changePasswordLimiters = [
     message: "Too many password change attempts. Please try again later.",
   }),
   // Per IP: 20 attempts per 15 minutes
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 20,
     keyGenerator: getKeyByIP,
@@ -242,7 +227,7 @@ export const changePasswordLimiters = [
 ];
 
 export const pinSetupLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 5,
     keyGenerator: getKeyByIPAndEmail,
@@ -250,7 +235,7 @@ export const pinSetupLimiters = [
     failMode: "closed",
     message: "Too many PIN setup attempts. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 10,
     keyGenerator: getKeyByIP,
@@ -261,7 +246,7 @@ export const pinSetupLimiters = [
 ];
 
 export const pinChangeLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 5,
     keyGenerator: getKeyByIPAndEmail,
@@ -269,7 +254,7 @@ export const pinChangeLimiters = [
     failMode: "closed",
     message: "Too many PIN change attempts. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 10,
     keyGenerator: getKeyByIP,
@@ -280,7 +265,7 @@ export const pinChangeLimiters = [
 ];
 
 export const pinForgotLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 3,
     keyGenerator: getKeyByIPAndEmail,
@@ -288,7 +273,7 @@ export const pinForgotLimiters = [
     failMode: "closed",
     message: "Too many PIN reset requests. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 5,
     keyGenerator: getKeyByIP,
@@ -299,7 +284,7 @@ export const pinForgotLimiters = [
 ];
 
 export const pinResetLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 5,
     keyGenerator: getKeyByIPAndEmail,
@@ -307,7 +292,7 @@ export const pinResetLimiters = [
     failMode: "closed",
     message: "Too many PIN reset attempts. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 10,
     keyGenerator: getKeyByIP,
@@ -318,7 +303,7 @@ export const pinResetLimiters = [
 ];
 
 export const pinRequestChangeOtpLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 3,
     keyGenerator: getKeyByIPAndEmail,
@@ -326,7 +311,7 @@ export const pinRequestChangeOtpLimiters = [
     failMode: "closed",
     message: "Too many OTP requests. Please try again later.",
   }),
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 5,
     keyGenerator: getKeyByIP,
@@ -343,7 +328,7 @@ export const pinRequestChangeOtpLimiters = [
 // ============================================================================
 
 export const refreshTokenLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 30,
     keyGenerator: getKeyByIP,
@@ -359,7 +344,7 @@ export const refreshTokenLimiters = [
 // ============================================================================
 
 export const logoutLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 30,
     keyGenerator: getKeyByIP,
@@ -374,7 +359,7 @@ export const logoutLimiters = [
 // ============================================================================
 
 export const logoutAllLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 5,
     keyGenerator: getKeyByUserId,
@@ -390,7 +375,7 @@ export const logoutAllLimiters = [
 // ============================================================================
 
 export const meLimiters = [
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 100,
     keyGenerator: getKeyByUserId,
@@ -405,7 +390,7 @@ export const meLimiters = [
 
 export const paymentInitLimiters = [
   // Per-user limit — max 5 initializations per 15 minutes
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: FIFTEEN_MIN,
     maxRequests: 5,
     keyGenerator: getKeyByUserId, // keyed to the user, not IP
@@ -414,7 +399,7 @@ export const paymentInitLimiters = [
     message: "Too many payment attempts. Please wait before trying again.",
   }),
   // Per-IP limit — catches unauthenticated abuse before auth runs
-  createRateLimitMiddleware(redis, {
+  createRateLimitMiddleware({
     windowMs: ONE_HOUR,
     maxRequests: 20,
     keyGenerator: getKeyByIP,
@@ -424,7 +409,7 @@ export const paymentInitLimiters = [
   }),
 ];
 
-export const paymentListLimiter = createRateLimitMiddleware(redis, {
+export const paymentListLimiter = createRateLimitMiddleware({
   windowMs: ONE_MINUTE,
   maxRequests: 20,
   keyGenerator: getKeyByUserId,
@@ -433,7 +418,7 @@ export const paymentListLimiter = createRateLimitMiddleware(redis, {
   message: "Too many requests. Please slow down.",
 });
 
-export const paymentReferenceLimiter = createRateLimitMiddleware(redis, {
+export const paymentReferenceLimiter = createRateLimitMiddleware({
   windowMs: ONE_MINUTE,
   maxRequests: 30,
   keyGenerator: getKeyByUserId,
@@ -460,3 +445,30 @@ export const paystackIpWhitelist = (
 
   next();
 };
+
+// ============================================================================
+// KYC RESUBMIT — Medium
+// Authenticated (requireAuth runs first), so keyed by user. Protects the
+// admin review queue and the Cloudinary upload pipeline from resubmission
+// spam. Fail-open: a Redis outage shouldn't block a legitimate resubmission.
+// ============================================================================
+
+export const kycResubmitLimiters = [
+  createRateLimitMiddleware({
+    windowMs: TWENTY_FOUR_HOURS,
+    maxRequests: 5,
+    keyGenerator: getKeyByUserId,
+    keyPrefix: "rl:kyc-resubmit:user",
+    failMode: "open",
+    message:
+      "Too many resubmission attempts. Please try again tomorrow, or contact support if your documents were incorrectly rejected.",
+  }),
+  createRateLimitMiddleware({
+    windowMs: ONE_HOUR,
+    maxRequests: 10,
+    keyGenerator: getKeyByIP,
+    keyPrefix: "rl:kyc-resubmit:ip",
+    failMode: "open",
+    message: "Too many requests from this device. Please try again later.",
+  }),
+];

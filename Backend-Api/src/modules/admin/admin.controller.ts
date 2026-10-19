@@ -1,5 +1,6 @@
 import { IAuthRequest } from "@/config/interfaces/request.interface";
 import AdminUserService from "@/modules/admin/admin.service";
+import { AuditModel } from "@/modules/audit/audit.model";
 import BadRequestError from "@/shared/errors/badRequest";
 import asyncWrapper from "@/shared/middleware/async.wrapper";
 import { isAdmin, requireAuth } from "@/shared/middleware/auth.middleware";
@@ -52,6 +53,8 @@ class AdminUserController {
       isAdmin,
       this.getDashboardStats,
     );
+
+    this.route.get("/admin/logs/live", requireAuth, isAdmin, this.getLiveLogs);
   }
 
   private listUsers = asyncWrapper(
@@ -133,6 +136,17 @@ class AdminUserController {
     async (req: IAuthRequest, res: Response): Promise<Response | void> => {
       const result = await this.adminUserService.getDashboardStats();
       res.status(200).json({ ok: true, data: result });
+    },
+  );
+
+  private getLiveLogs = asyncWrapper(
+    async (req: IAuthRequest, res: Response): Promise<Response | void> => {
+      const limit = Math.min(20, Number(req.query.limit) || 20);
+      const logs = await AuditModel.find()
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean();
+      res.status(200).json({ ok: true, data: logs });
     },
   );
 }

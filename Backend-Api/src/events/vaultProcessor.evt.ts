@@ -32,6 +32,10 @@ export async function processVaultEvents(
         logger.info("vault withdrawal completed");
         break;
 
+      case "EDIT_VAULT":
+        logger.info("vault edited");
+        break;
+
       case "VAULT_TRANSFER_COMPLETED":
         logger.info(
           "No email for vault transfer yet — projection handled separately",
